@@ -7,10 +7,11 @@ import re
 import socket
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
+from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parent / 'dist'
 HOST = os.getenv('FLOW_HOST', '127.0.0.1')
@@ -25,6 +26,28 @@ LOCK = threading.Lock()
 CACHE = {}
 QUOTE_CONTEXT = None
 LAST_FLOW_REQUEST = 0.0
+TRADING_DATES_CACHE = None
+
+
+def history_bounds():
+    """按美东日期限定最近一年内已结束的历史交易日。"""
+    today = datetime.now(ZoneInfo('America/New_York')).date()
+    return (today - timedelta(days=365)).isoformat(), (today - timedelta(days=1)).isoformat()
+
+
+def trading_dates(context):
+    """缓存真实美股交易日历，避免将周末或休市日替换为别的日期。"""
+    global TRADING_DATES_CACHE
+    bounds = history_bounds()
+    if TRADING_DATES_CACHE and TRADING_DATES_CACHE[0] == bounds:
+        return TRADING_DATES_CACHE[1]
+    from futu import Market, RET_OK
+    ret, days = context.request_trading_days(market=Market.US, start=bounds[0], end=bounds[1])
+    if ret != RET_OK:
+        raise RuntimeError('无法取得美股交易日历，请稍后重试。')
+    dates = sorted(item['time'] for item in days)
+    TRADING_DATES_CACHE = (bounds, dates)
+    return dates
 
 
 def finite(value):
@@ -34,6 +57,19 @@ def finite(value):
         return value if math.isfinite(value) else None
     except (TypeError, ValueError):
         return None
+
+
+def cached_daily_quote(symbol, selected_date):
+    """使用已验证的复权历史日K线补充所选日期价格，缺失时不替用现价。"""
+    path = ROOT.parent / '.data' / 'raw' / (symbol + '.json')
+    try:
+        record = json.loads(path.read_text())
+        for quote in record['prices']:
+            if str(quote['time_key'])[:10] == selected_date:
+                return quote
+    except (OSError, ValueError, KeyError):
+        pass
+    return None
 
 
 def get_context():
@@ -53,16 +89,19 @@ def get_context():
     return QUOTE_CONTEXT
 
 
-def fetch_snapshot(symbols):
-    """缓存并串行拉取快照，资金流调用间隔保证每 30 秒少于 30 次。"""
+def fetch_snapshot(symbols, selected_date=''):
+    """按日期读取日级资金流或最新快照，保持缓存隔离及请求限频。"""
     global LAST_FLOW_REQUEST
-    cache_key = tuple(symbols)
+    cache_key = (tuple(symbols), selected_date)
     with LOCK:
         cached = CACHE.get(cache_key)
-        if cached and time.monotonic() - cached[0] < 60:
+        if cached and time.monotonic() - cached[0] < (3600 if selected_date else 60):
             return cached[1]
         from_context = get_context()
         from futu import RET_OK, PeriodType
+        dates = trading_dates(from_context)
+        if selected_date and selected_date not in dates:
+            raise ValueError('所选日期不是可查询的已结束美股交易日，请选择其他日期。')
         codes = ['US.' + symbol for symbol in symbols]
         ret, snapshots = from_context.get_market_snapshot(codes)
         if ret != RET_OK:
@@ -74,9 +113,12 @@ def fetch_snapshot(symbols):
             record = {'symbol': symbol, 'name': symbol, 'type': 'etf' if symbol in ETFS else 'stock',
                       'price': None, 'change': None, 'low': None, 'high': None,
                       'ba': None, 'big': None, 'super': None, 'mid': None, 'small': None,
-                      'flowTime': '', 'quoteTime': '', 'providerTime': '', 'flowStatus': 'unavailable'}
+                      'flowTime': '', 'quoteTime': '', 'providerTime': '', 'flowStatus': 'unavailable',
+                      'history': []}
             if quote is not None:
-                record.update(name=str(quote.get('name', symbol)), price=finite(quote.get('last_price')),
+                record['name'] = str(quote.get('name', symbol))
+            if quote is not None and not selected_date:
+                record.update(price=finite(quote.get('last_price')),
                               low=finite(quote.get('low_price')), high=finite(quote.get('high_price')),
                               quoteTime=str(quote.get('update_time', '')))
                 previous_close = finite(quote.get('prev_close_price'))
@@ -85,13 +127,35 @@ def fetch_snapshot(symbols):
                 bid, ask = finite(quote.get('bid_vol')), finite(quote.get('ask_vol'))
                 if bid is not None and ask is not None and ask > 0:
                     record['ba'] = bid / ask
+            if selected_date:
+                historical_quote = cached_daily_quote(symbol, selected_date)
+                if historical_quote:
+                    record.update(price=finite(historical_quote.get('close')),
+                                  change=finite(historical_quote.get('change_rate')),
+                                  low=finite(historical_quote.get('low')), high=finite(historical_quote.get('high')),
+                                  quoteTime=selected_date + ' · 前复权日K线')
+            if quote is not None or selected_date:
                 interval = 1.05 - (time.monotonic() - LAST_FLOW_REQUEST)
                 if interval > 0:
                     time.sleep(interval)
                 LAST_FLOW_REQUEST = time.monotonic()
-                flow_ret, flow = from_context.get_capital_flow('US.' + symbol, period_type=PeriodType.INTRADAY)
+                if selected_date:
+                    start = max(history_bounds()[0], (datetime.fromisoformat(selected_date) - timedelta(days=35)).date().isoformat())
+                    flow_ret, flow = from_context.get_capital_flow('US.' + symbol, period_type=PeriodType.DAY,
+                                                                  start=start, end=selected_date)
+                else:
+                    flow_ret, flow = from_context.get_capital_flow('US.' + symbol, period_type=PeriodType.INTRADAY)
                 if flow_ret == RET_OK and not flow.empty:
                     flow = flow.sort_values('capital_flow_item_time')
+                    if selected_date:
+                        for _, day in flow.tail(20).iterrows():
+                            big, super_flow = finite(day.get('big_in_flow')), finite(day.get('super_in_flow'))
+                            main = (big + super_flow) / 10000 if big is not None and super_flow is not None else None
+                            record['history'].append({'date': str(day['capital_flow_item_time'])[:10], 'main': main})
+                        flow = flow[flow['capital_flow_item_time'].astype(str).str[:10] == selected_date]
+                    if flow.empty:
+                        rows.append(record)
+                        continue
                     latest = flow.iloc[-1]
                     for key, upstream in [('big', 'big_in_flow'), ('super', 'super_in_flow'),
                                           ('mid', 'mid_in_flow'), ('small', 'sml_in_flow')]:
@@ -105,8 +169,11 @@ def fetch_snapshot(symbols):
         if not any(row['flowStatus'] == 'ok' for row in rows):
             raise RuntimeError('没有取得可用资金流，请检查美股行情权限及标的是否支持资金流。')
         result = {'source': 'futu-opend', 'unit': 'USD_10000', 'timezone': 'America/New_York',
+                  'mode': 'history' if selected_date else 'live', 'date': selected_date,
+                  'tradingDates': dates,
                   'generatedAt': datetime.now(timezone.utc).isoformat(), 'rows': rows}
-        CACHE.clear()
+        if len(CACHE) >= 8:
+            CACHE.pop(next(iter(CACHE)))
         CACHE[cache_key] = (time.monotonic(), result)
         return result
 
@@ -150,7 +217,7 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         """校验请求后获取资金流；静态请求只允许访问已知页面资产。"""
         parsed = urlsplit(self.path)
-        if parsed.path == '/api/snapshot':
+        if parsed.path in {'/api/snapshot', '/api/validation'}:
             origin = self.headers.get('Origin', '')
             own_origins = {f'http://127.0.0.1:{PORT}', f'http://localhost:{PORT}'}
             if origin and origin not in ALLOWED_ORIGINS | own_origins:
@@ -159,13 +226,32 @@ class Handler(SimpleHTTPRequestHandler):
             if TOKEN and not hmac.compare_digest(self.headers.get('Authorization', ''), 'Bearer ' + TOKEN):
                 self.respond(401, {'error': '访问令牌无效。'})
                 return
+            if parsed.path == '/api/validation':
+                path = ROOT.parent / '.data' / 'validation.json'
+                try:
+                    self.respond(200, json.loads(path.read_text()))
+                except (OSError, ValueError):
+                    self.respond(404, {'error': '历史验证尚未完成，请稍后查看。'})
+                return
             raw = parse_qs(parsed.query).get('symbols', [','.join(DEFAULT_SYMBOLS)])[0]
             symbols = list(dict.fromkeys(raw.upper().split(',')))
             if not 1 <= len(symbols) <= 60 or any(not re.fullmatch(r'[A-Z][A-Z0-9.-]{0,14}', code) for code in symbols):
                 self.respond(400, {'error': '请提供 1 至 60 个有效的美股代码。'})
                 return
+            selected_date = parse_qs(parsed.query).get('date', [''])[0]
+            if selected_date:
+                try:
+                    valid_date = datetime.strptime(selected_date, '%Y-%m-%d').date().isoformat()
+                    minimum, maximum = history_bounds()
+                    if valid_date != selected_date or not minimum <= selected_date <= maximum:
+                        raise ValueError
+                except ValueError:
+                    self.respond(400, {'error': '历史日期需在最近一年内，且早于当前美东日期。'})
+                    return
             try:
-                self.respond(200, fetch_snapshot(symbols))
+                self.respond(200, fetch_snapshot(symbols, selected_date))
+            except ValueError as error:
+                self.respond(400, {'error': str(error)})
             except RuntimeError as error:
                 self.respond(503, {'error': str(error)})
             except Exception:
