@@ -106,6 +106,55 @@ def history_bounds():
     return (today - timedelta(days=365)).isoformat(), (today - timedelta(days=1)).isoformat()
 
 
+def fetch_main_window(symbol, selected_date, days):
+    """汇总截至指定日期最近X个交易日的主力净额，缺失日不补零或推算持仓。"""
+    key = ('main-window', symbol, selected_date, days, history_bounds()[1])
+    with LOCK:
+        if key in PATH_CACHE:
+            return PATH_CACHE[key]
+        context = get_context()
+        dates = trading_dates(context)
+        if selected_date not in dates:
+            raise ValueError('截至日期不是可查询的已结束美股交易日，请选择其他日期。')
+        index = dates.index(selected_date)
+        selected = dates[max(0, index - days + 1):index + 1]
+        record = daily_record(symbol, selected[0], context)
+        flows = {str(row['capital_flow_item_time'])[:10]: row for row in record['flow']}
+        prices = {str(row['time_key'])[:10]: row for row in record['prices']}
+        rows, running, missing = [], 0.0, 0
+        for day in selected:
+            flow, quote = flows.get(day, {}), prices.get(day, {})
+            big, extra = finite(flow.get('big_in_flow')), finite(flow.get('super_in_flow'))
+            main = (big + extra) / 10000 if big is not None and extra is not None else None
+            if main is None:
+                missing += 1
+            else:
+                running += main
+            close, previous = finite(quote.get('close')), finite(quote.get('last_close'))
+            rows.append({'date': day, 'big': big / 10000 if big is not None else None,
+                         'super': extra / 10000 if extra is not None else None, 'main': main,
+                         'cumulativeMain': running if missing == 0 else None, 'close': close,
+                         'change': (close / previous - 1) * 100 if close and previous and previous > 0 else None})
+        values = [row['main'] for row in rows if row['main'] is not None]
+        if not values:
+            raise ValueError('该股票在所选区间没有可用主力资金流，请确认代码、上市日期或选择其他区间。')
+        inflows = [value for value in values if value > 0]
+        outflows = [value for value in values if value < 0]
+        name = next((str(row['name']) for row in prices.values() if row.get('name')), symbol)
+        result = {'source': 'futu-opend', 'unit': 'USD_10000', 'timezone': 'America/New_York',
+                  'symbol': symbol, 'name': name, 'date': selected_date, 'start': selected[0],
+                  'requestedDays': days, 'availableDays': len(selected), 'validDays': len(values),
+                  'missingDays': missing, 'inflowDays': len(inflows), 'outflowDays': len(outflows),
+                  'flatDays': len(values) - len(inflows) - len(outflows),
+                  'inflowDaySum': sum(inflows), 'outflowDaySum': sum(outflows),
+                  'knownNet': sum(values), 'net': sum(values) if missing == 0 else None,
+                  'remainingCapital': None, 'rows': rows}
+        if len(PATH_CACHE) >= 32:
+            PATH_CACHE.pop(next(iter(PATH_CACHE)))
+        PATH_CACHE[key] = result
+        return result
+
+
 def trading_dates(context):
     """缓存真实美股交易日历，避免将周末或休市日替换为别的日期。"""
     global TRADING_DATES_CACHE
@@ -288,7 +337,7 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         """校验请求后获取资金流；静态请求只允许访问已知页面资产。"""
         parsed = urlsplit(self.path)
-        if parsed.path in {'/api/snapshot', '/api/validation', '/api/path'}:
+        if parsed.path in {'/api/snapshot', '/api/validation', '/api/path', '/api/main-window'}:
             origin = self.headers.get('Origin', '')
             own_origins = {f'http://127.0.0.1:{PORT}', f'http://localhost:{PORT}'}
             if origin and origin not in ALLOWED_ORIGINS | own_origins:
@@ -319,7 +368,7 @@ class Handler(SimpleHTTPRequestHandler):
                 except ValueError:
                     self.respond(400, {'error': '历史日期需在最近一年内，且早于当前美东日期。'})
                     return
-            if parsed.path == '/api/path':
+            if parsed.path in {'/api/path', '/api/main-window'}:
                 query = parse_qs(parsed.query)
                 symbol = query.get('symbol', [''])[0].upper()
                 try:
@@ -330,13 +379,14 @@ class Handler(SimpleHTTPRequestHandler):
                     self.respond(400, {'error': '请填写有效美股代码、历史交易日及 1 至 120 个后续交易日。'})
                     return
                 try:
-                    self.respond(200, fetch_path(symbol, selected_date, days))
+                    fetcher = fetch_main_window if parsed.path == '/api/main-window' else fetch_path
+                    self.respond(200, fetcher(symbol, selected_date, days))
                 except ValueError as error:
                     self.respond(400, {'error': str(error)})
                 except RuntimeError as error:
                     self.respond(503, {'error': str(error)})
                 except Exception:
-                    self.respond(502, {'error': '后续走势查询失败，请检查 OpenD 连接及行情权限。'})
+                    self.respond(502, {'error': '历史区间查询失败，请检查 OpenD 连接及行情权限。'})
                 return
             try:
                 self.respond(200, fetch_snapshot(symbols, selected_date))
