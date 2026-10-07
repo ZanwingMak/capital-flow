@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>真实数据接入教程 / FLOWDESK</title><link rel="stylesheet" href="styles.css"></head>
+<body>
+<header class="topbar"><a class="brand" href="index.html"><span class="logo">▥</span> FLOWDESK <span class="brand-sub">资金流观察台</span></a><a class="button" href="index.html">返回看板 ↗</a></header>
+<main class="guide-main">
+<div class="heading"><div><div class="eyebrow">GET CONNECTED <span>/</span> REAL DATA</div><h1>真实数据接入教程<span class="accent">.</span></h1><p class="subtitle">当前已支持富途 OpenD 的美股、港股和沪深 A 股行情与资金流。</p></div></div>
+<div class="guide-note"><p>看板的价格和资金流来自真实行情接口。未连接时显示 —；获取成功后展示对应市场的数据。历史数据会标注交易日期，最新快照会标注有效时间。</p></div>
+
+<section class="guide-card"><h2>先选使用方式</h2><div class="table-scroll"><table><thead><tr><th>场景</th><th>打开哪个页面</th><th>需要什么</th></tr></thead><tbody><tr><td>在这台 Mac 上使用</td><td><a href="http://127.0.0.1:8788/" target="_blank" rel="noopener">本机看板 ↗</a></td><td>登录 OpenD，启动本地行情服务</td></tr><tr><td>使用线上网站</td><td><a href="https://capital-flow-mai-20261007.zymbritain.chatgpt.site/">线上看板 ↗</a></td><td>你自己的 HTTPS 行情接口与访问令牌</td></tr></tbody></table></div><p>当前线上部署包含页面，未托管富途行情服务。线上页面不会自动读取你电脑里的 OpenD。若只在当前电脑上使用，下面的本机步骤就足够。</p></section>
+
+<section class="guide-card"><h2>一、本机接入富途 OpenD</h2><ol><li><strong>安装并登录 OpenD。</strong> 从<a href="https://openapi.futunn.com/futu-api-doc/quick/opend-base.html" target="_blank" rel="noopener">富途官方安装说明</a>下载 macOS 版本，登录你的富途或 moomoo 账户。这里登录的是 OpenD；只登录牛牛客户端还不够。</li><li><strong>确认行情权限和连接配置。</strong> 在 OpenD 中查看所需市场的行情权限。本项目默认连接 <code>127.0.0.1:11111</code>。使用看板期间保持 OpenD 已登录。本项目只读取行情，不访问交易接口。</li><li><strong>启动项目的行情服务。</strong> 在 macOS「终端」执行下方命令。第一次使用时安装依赖；这台电脑已有 <code>.venv</code>，可直接执行启动命令。</li></ol>
+<h3>第一次配置环境</h3><pre><code>cd /Users/maizhenying/Code/my_project/capital-flow
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt</code></pre>
+<h3>启动行情服务</h3><pre><code>cd /Users/maizhenying/Code/my_project/capital-flow
+.venv/bin/python server.py</code></pre>
+<p>终端应显示 <code>Local: http://127.0.0.1:8788</code>。保持这个终端运行，使用完毕按 Control + C 停止。</p>
+<ol start="4"><li><strong>打开本机看板。</strong> 访问 <a href="http://127.0.0.1:8788/" target="_blank" rel="noopener">http://127.0.0.1:8788/</a>，页面会自动连接。如果你曾主动断开，在「接入数据源」中填写下方接口地址，令牌留空，然后点击「连接并获取」。</li></ol>
+<pre><code>http://127.0.0.1:8788/api/snapshot</code></pre>
+<ol start="5"><li><strong>确认真实数据已加载。</strong> 顶部应显示「富途 OpenD · 已连接」或「历史日级」，并显示有效时间或交易日期。选择市场、添加代码即可查询。港股代码如 <code>00700</code>；A 股如 <code>SH.600519</code> 或 <code>SZ.000001</code>。</li></ol>
+<p>若使用不同 OpenD 地址或端口，可在启动时设置 <code>FUTU_HOST</code>、<code>FUTU_PORT</code>；本地网页端口由 <code>FLOW_PORT</code> 设置。项目不会保存富途账户密码。</p></section>
+
+<section class="guide-card"><h2>二、让线上页面连接真实数据</h2><p>需要先准备一个你控制的 HTTPS 域名和运行 OpenD 的电脑或服务器。只希望在这台 Mac 上查看时，请直接使用本机看板。</p><ol><li><strong>在行情服务所在机器上登录 OpenD。</strong> 行情服务与 OpenD 必须能够互相连接。以运行在同一机器为例，OpenD 地址仍为 <code>127.0.0.1:11111</code>。</li><li><strong>生成自己的接口访问令牌。</strong> 令牌用于保护行情服务，不是富途账户密码。可用下方命令生成，然后将它保存在你自己的配置中。</li></ol>
+<pre><code>.venv/bin/python -c 'import secrets; print(secrets.token_urlsafe(32))'</code></pre>
+<ol start="3"><li><strong>启用令牌和网站来源白名单。</strong> 下方令牌是占位文字，运行前替换。HTTPS 代理与服务运行在同一机器时，行情服务保持仅监听本机地址即可。</li></ol>
+<pre><code>FLOW_HOST=127.0.0.1 \
+FLOW_TOKEN='替换为你生成的访问令牌' \
+FLOW_ALLOWED_ORIGINS='https://capital-flow-mai-20261007.zymbritain.chatgpt.site' \
+.venv/bin/python server.py</code></pre>
+<ol start="4"><li><strong>配置 HTTPS 反向代理。</strong> 将你拥有的接口域名代理到 <code>http://127.0.0.1:8788</code>，使用有效的 HTTPS 证书；保留请求路径、查询参数及 <code>Authorization</code>、<code>Origin</code> 请求头，允许转发 GET 和 OPTIONS。示例接口地址形如 <code>https://你的接口域名/api/snapshot</code>。这个示例地址需要你自行配置，当前没有现成公网接口。</li><li><strong>在网站连接。</strong> 打开线上看板，点击「接入数据源」，填写上一步的 HTTPS 接口地址和相同访问令牌，再点「连接并获取」。成功后页面会显示来源、有效时间和真实表格。令牌仅保留在当前页面内存，重新打开页面需要再次输入。</li></ol>
+<h3>已有 Nginx 和有效证书时的代理配置</h3><p>先将你拥有的域名解析到行情服务所在服务器。把下面的 <code>server</code> 段加入 Nginx 的 <code>http</code> 配置中，替换域名、证书和私钥路径，再检查配置并重新加载。Nginx 与行情服务需运行在同一机器；该示例只开放行情 API 路径。</p>
+<pre><code>server {
+    listen 443 ssl;
+    server_name flow.example.com;
+    ssl_certificate /你的证书路径/fullchain.pem;
+    ssl_certificate_key /你的私钥路径/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:8788;
+        proxy_set_header Host $host;
+        proxy_set_header Authorization $http_authorization;
+        proxy_set_header Origin $http_origin;
+        proxy_read_timeout 120s;
+    }
+    location / {
+        return 404;
+    }
+}</code></pre><pre><code>nginx -t
+nginx -s reload</code></pre><p>配置成功后，在看板填写 <code>https://你实际配置的域名/api/snapshot</code>，并使用上面生成的令牌。证书签发、域名和 Nginx 安装需要在你自己的环境完成。<a href="https://nginx.org/en/docs/http/configuring_https_servers.html" target="_blank" rel="noopener">Nginx 官方 HTTPS 配置说明 ↗</a></p>
+<p>不能在 HTTPS 线上页面中填写 <code>http://127.0.0.1:8788</code> 作为远程接口；请打开本机看板，或使用配置好的 HTTPS 地址。也不要将 OpenD 的 <code>11111</code> 端口、富途官网或其他行情网站网址当成这里的 JSON 接口。</p></section>
+
+<section class="guide-card"><h2>三、历史查询和常见问题</h2><dl><dt>怎样查看某天的数据？</dt><dd>选择「历史交易日」会自动查询。上一日、下一日按该市场真实交易日历切换。主力区间资金显示最近 X 个交易日的每日净额及累计净额；单股后续走势显示事件日之后的逐日价格。历史价格采用前复权。</dd><dt>为什么有些数值是 —？</dt><dd>对应字段缺失、账户没有权限或标的不支持该数据。不会用零或其他日期的数值填补。</dd><dt>提示未连接 OpenD</dt><dd>检查 OpenD 是否已登录，地址和端口是否与 <code>FUTU_HOST</code>、<code>FUTU_PORT</code> 一致。终端中的行情服务也需要持续运行。</dd><dt>提示无行情权限</dt><dd>在 OpenD 查看该市场权限；行情可用性和延迟由账户权限决定。安装 SDK 不等于取得所有市场的实时行情。</dd><dt>提示访问令牌无效或网站来源未授权</dt><dd>前者检查页面令牌与 <code>FLOW_TOKEN</code> 是否一致；后者检查 <code>FLOW_ALLOWED_ORIGINS</code> 是否包含当前网站的完整来源，来源结尾不要带斜杠。修改服务环境变量后需要重启服务。</dd><dt>提示休市日或等待较久</dt><dd>休市日没有新的日级数据，选择其他交易日。多标的资金流查询会按接口限频顺序读取，首次查询可能需要几十秒；加载时会显示目标日期。</dd><dt>历史资金流能追溯多久？</dt><dd>富途接口提供最近一年的历史周期数据，当前页面查询已结束的交易日；过去日期的分钟资金流不能通过当前接口补取。盘前、盘后成交不在该资金流接口范围内。</dd><dt>还支持哪些数据源？</dt><dd>当前看板已接通的来源是富途 OpenD。东方财富 / AKShare、Yahoo Finance 和 SEC 披露尚未作为看板接口接入，不能直接把它们的官网地址填写进连接框。资金流分类也不能表示真实机构剩余持仓。</dd></dl><p><a href="https://openapi.futunn.com/futu-api-doc/quote/get-capital-flow.html" target="_blank" rel="noopener">富途资金流接口与限制 ↗</a> · <a href="https://openapi.futunn.com/futu-api-doc/quick/demo.html" target="_blank" rel="noopener">富途官方 Python 接入示例 ↗</a></p></section>
+<footer><span>FLOWDESK / 数据接入</span><a class="accent" href="index.html">返回资金流看板 ↗</a></footer>
+</main></body></html>

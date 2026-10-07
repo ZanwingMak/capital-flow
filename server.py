@@ -458,7 +458,7 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception:
                 self.respond(502, {'error': '行情服务异常，请确认 OpenD 连接和行情权限。'})
             return
-        if parsed.path not in {'/', '/index.html', '/styles.css', '/app.js', '/favicon.ico'}:
+        if parsed.path not in {'/', '/index.html', '/guide.html', '/styles.css', '/app.js', '/favicon.ico'}:
             self.respond(404, {'error': '页面不存在。'})
             return
         if parsed.path == '/favicon.ico':
