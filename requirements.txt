@@ -1,1 +1,2 @@
 futu-api>=9.0,<11
+tzdata; sys_platform == "win32"

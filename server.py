@@ -71,7 +71,7 @@ def daily_record(symbol, selected_date, context, market='US'):
     path = ROOT.parent / '.data' / 'raw' / ((symbol if market == 'US' else market + '.' + symbol) + '.json')
     maximum = history_bounds(market)[1]
     try:
-        record = json.loads(path.read_text())
+        record = json.loads(path.read_text(encoding='utf-8'))
         if record['adjustment'] == 'QFQ' and record['start'] <= selected_date and record['end'] >= maximum:
             return record
     except (OSError, ValueError, KeyError):
@@ -227,7 +227,7 @@ def cached_daily_quote(symbol, selected_date, market='US'):
     """使用已验证的复权历史日K线补充所选日期价格，缺失时不替用现价。"""
     path = ROOT.parent / '.data' / 'raw' / ((symbol if market == 'US' else market + '.' + symbol) + '.json')
     try:
-        record = json.loads(path.read_text())
+        record = json.loads(path.read_text(encoding='utf-8'))
         for quote in record['prices']:
             if str(quote['time_key'])[:10] == selected_date:
                 return quote
@@ -407,7 +407,7 @@ class Handler(SimpleHTTPRequestHandler):
             if parsed.path == '/api/validation':
                 path = ROOT.parent / '.data' / 'validation.json'
                 try:
-                    self.respond(200, json.loads(path.read_text()))
+                    self.respond(200, json.loads(path.read_text(encoding='utf-8')))
                 except (OSError, ValueError):
                     self.respond(404, {'error': '历史验证尚未完成，请稍后查看。'})
                 return
@@ -458,7 +458,7 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception:
                 self.respond(502, {'error': '行情服务异常，请确认 OpenD 连接和行情权限。'})
             return
-        if parsed.path not in {'/', '/index.html', '/guide.html', '/styles.css', '/app.js', '/favicon.ico'}:
+        if parsed.path not in {'/', '/index.html', '/guide.html', '/windows-package.zip', '/styles.css', '/app.js', '/favicon.ico'}:
             self.respond(404, {'error': '页面不存在。'})
             return
         if parsed.path == '/favicon.ico':
