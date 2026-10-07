@@ -74,7 +74,7 @@ def fetch_snapshot(symbols):
             record = {'symbol': symbol, 'name': symbol, 'type': 'etf' if symbol in ETFS else 'stock',
                       'price': None, 'change': None, 'low': None, 'high': None,
                       'ba': None, 'big': None, 'super': None, 'mid': None, 'small': None,
-                      'flowTime': '', 'quoteTime': '', 'flowStatus': 'unavailable'}
+                      'flowTime': '', 'quoteTime': '', 'providerTime': '', 'flowStatus': 'unavailable'}
             if quote is not None:
                 record.update(name=str(quote.get('name', symbol)), price=finite(quote.get('last_price')),
                               low=finite(quote.get('low_price')), high=finite(quote.get('high_price')),
@@ -98,7 +98,8 @@ def fetch_snapshot(symbols):
                         value = finite(latest.get(upstream))
                         record[key] = value / 10000 if value is not None else None
                     valid_time = str(latest.get('last_valid_time', ''))
-                    record['flowTime'] = valid_time if valid_time and valid_time != 'N/A' else str(latest.get('capital_flow_item_time', ''))
+                    record['flowTime'] = str(latest.get('capital_flow_item_time', ''))
+                    record['providerTime'] = valid_time if valid_time != 'N/A' else ''
                     record['flowStatus'] = 'ok' if record['big'] is not None and record['super'] is not None else 'unavailable'
             rows.append(record)
         if not any(row['flowStatus'] == 'ok' for row in rows):
