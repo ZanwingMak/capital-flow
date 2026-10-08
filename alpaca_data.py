@@ -43,11 +43,13 @@ def request_json(url, parameters):
     if not key or not secret:
         raise ValueError('尚未配置 Alpaca 密钥；请在本机项目 .env 中填写两项密钥并保存，无需重启。')
     request = Request(url + '?' + urlencode(parameters), headers={
-        'APCA-API-KEY-ID': key, 'APCA-API-SECRET-KEY': secret, 'Accept': 'application/json'})
+        'APCA-API-KEY-ID': key, 'APCA-API-SECRET-KEY': secret,
+        'Accept': 'application/json', 'Accept-Encoding': 'gzip'})
     for attempt in range(3):
         try:
             with urlopen(request, timeout=25) as response:
-                return json.load(response)
+                stream = gzip.GzipFile(fileobj=response) if response.headers.get('Content-Encoding') == 'gzip' else response
+                return json.load(stream)
         except HTTPError as error:
             if error.code in {401, 403}:
                 raise RuntimeError('Alpaca 拒绝访问：请检查密钥有效性及 SIP 历史成交、报价权限；不会自动切换到 IEX。') from None
@@ -120,7 +122,7 @@ def aggregate(trades, quote_pages, start, close, threshold):
             continue
         amount = price * size / 10000
         conditions = set(trade.get('c', []))
-        if '6' in conditions and begin <= stamp <= finish:
+        if '6' in conditions and begin <= stamp <= finish + 60000000000:
             closing_auction += amount
         if not begin <= stamp < finish:
             continue
@@ -175,7 +177,7 @@ def aggregate(trades, quote_pages, start, close, threshold):
                         'directionReliable': bool(total and classified / total >= 0.8 and abs(sums['buy'] - sums['sell']) > sums['unknown'])})
     for row in buckets:
         row['netEstimate'] = row['buy'] - row['sell'] if row['largeTrades'] else None
-    return {'rows': buckets, 'windows': windows, 'tradeCount': len(trades), 'quoteCount': quote_count,
+    return {'rows': buckets, 'windows': windows, 'tradeCount': sum(row['trades'] for row in buckets), 'quoteCount': quote_count,
             'invalidTrades': rejected, 'closingAuctionAmount': closing_auction, 'paginationComplete': True}
 
 
@@ -239,10 +241,25 @@ def fetch_tail(symbol, date, days, threshold, progress):
         with gzip.open(temporary, 'wt', encoding='utf-8') as file:
             json.dump({'source': 'alpaca-sip', 'start': start.isoformat(), 'close': close.isoformat(), 'trades': trades, 'quotes': quotes}, file, allow_nan=False)
         temporary.replace(path)
+    auction_path = path.with_name(date + '-auction-v1.json.gz')
+    try:
+        with gzip.open(auction_path, 'rt', encoding='utf-8') as file:
+            auction_trades = json.load(file)
+    except (OSError, ValueError, EOFError):
+        progress(0, 1, '补取收盘后一分钟内报告的集合竞价成交，单独展示')
+        auction_trades = [row for page in pages('trades', symbol, close.isoformat(),
+                          (close + timedelta(minutes=1)).isoformat(), progress) for row in page]
+        temporary = auction_path.with_suffix('.tmp')
+        with gzip.open(temporary, 'wt', encoding='utf-8') as file:
+            json.dump(auction_trades, file, allow_nan=False)
+        temporary.replace(auction_path)
+    close_ns = int(close.timestamp()) * 1000000000
+    trades = trades + [row for row in auction_trades if timestamp_ns(row['t']) > close_ns]
     metrics = aggregate(trades, [quotes], start, close, threshold)
     rows = future_prices(symbol, date, days, calendar, progress)
     return {'source': 'alpaca-sip', 'market': 'US', 'feed': 'sip', 'unit': 'USD_10000', 'symbol': symbol,
             'date': date, 'start': start.isoformat(), 'closeTime': close.isoformat(), 'largeThresholdUSD': threshold,
+            'auctionReportUntil': (close + timedelta(minutes=1)).isoformat(),
             'adjustment': 'split-and-dividend', 'requestedDays': days, 'availableDays': len(rows) - 1,
             'path': rows, **metrics,
-            'method': '按单笔成交金额划分大额成交；不晚于成交且最多5秒前的有效买卖报价用于估算主动方向。价在卖一及以上视为买入，买一及以下视为卖出，中间价、失效报价和缺失报价归为无法判断。排除收盘集合竞价、盘外、交叉及其他特殊成交条件，条件I的零股成交也排除。覆盖率为可分类大额金额占比；80%仅是界面质量门槛，不代表算法准确率。指标不识别机构身份，与富途口径不同；后续价格采用拆股与分红调整，事件日收盘基准收益不是实际策略成交收益。'}
+            'method': '按单笔成交金额划分大额成交，不是按原始委托单划分；不晚于成交且最多5秒前的有效买卖报价用于估算主动方向。价在卖一及以上视为买入，买一及以下视为卖出，中间价、失效报价和缺失报价归为无法判断。尾盘压力排除收盘集合竞价、盘外、交叉及其他特殊成交条件，条件I的零股成交也排除；收盘后一分钟内报告的集合竞价成交额单独列出。覆盖率为可分类大额金额占比；80%仅是界面质量门槛，不代表算法准确率。指标不识别机构身份，与富途口径不同；后续价格采用拆股与分红调整，事件日收盘基准收益不是实际策略成交收益。'}
