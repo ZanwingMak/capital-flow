@@ -5,6 +5,9 @@ import math
 import os
 import re
 import socket
+import secrets
+from concurrent.futures import ThreadPoolExecutor
+import research
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -22,13 +25,20 @@ TOKEN = os.getenv('FLOW_TOKEN', '')
 ALLOWED_ORIGINS = set(filter(None, os.getenv('FLOW_ALLOWED_ORIGINS', '').split(',')))
 ETFS = set('SPY QQQ XLB XLU XLK IWM SMH XLE XLF IBIT DIA XLI XLP XLC USO XLRE XLV SLV XLY GLD SOXX'.split())
 DEFAULT_SYMBOLS = list('SPY QQQ XLK XLF XLE SMH NVDA MSFT AAPL TSLA AMZN META'.split())
-LOCK = threading.Lock()
+LOCK = threading.RLock()
 CACHE = {}
 QUOTE_CONTEXT = None
 LAST_FLOW_REQUEST = 0.0
 TRADING_DATES_CACHE = {}
 RECORD_CACHE = {}
 PATH_CACHE = {}
+SESSIONS = {}
+JOBS = {}
+JOB_LOCK = threading.Lock()
+WORKER = ThreadPoolExecutor(max_workers=1)
+JOB_LOCAL = threading.local()
+WATCHLIST = {'US': set(DEFAULT_SYMBOLS), 'HK': set(), 'CN': set()}
+COLLECTOR_STOP = threading.Event()
 MARKETS = {
     'US': {'timezone': 'America/New_York', 'unit': 'USD_10000', 'name': '美股', 'calendar': 'US', 'symbols': DEFAULT_SYMBOLS},
     'HK': {'timezone': 'Asia/Hong_Kong', 'unit': 'HKD_10000', 'name': '港股', 'calendar': 'HK', 'symbols': ['00700', '09988', '03690', '01810', '00981', '02800']},
@@ -69,7 +79,7 @@ def daily_record(symbol, selected_date, context, market='US'):
     """优先复用完整历史缓存，其他股票按需获取真实资金流和前复权日K线。"""
     global LAST_FLOW_REQUEST
     path = ROOT.parent / '.data' / 'raw' / ((symbol if market == 'US' else market + '.' + symbol) + '.json')
-    maximum = history_bounds(market)[1]
+    minimum, maximum = history_bounds(market)
     try:
         record = json.loads(path.read_text(encoding='utf-8'))
         if record['adjustment'] == 'QFQ' and record['start'] <= selected_date and record['end'] >= maximum:
@@ -85,19 +95,23 @@ def daily_record(symbol, selected_date, context, market='US'):
     if interval > 0:
         time.sleep(interval)
     LAST_FLOW_REQUEST = time.monotonic()
-    ret, flow = context.get_capital_flow(quote_code(symbol, market), period_type=PeriodType.DAY,
-                                        start=selected_date, end=maximum)
+    ret, flow = provider_call(context.get_capital_flow, quote_code(symbol, market), period_type=PeriodType.DAY,
+                                        start=minimum, end=maximum)
     if ret != RET_OK or flow.empty:
         raise RuntimeError('该股票未取得历史资金流：' + str(flow))
-    ret, prices, next_page = context.request_history_kline(quote_code(symbol, market), start=selected_date,
+    ret, prices, next_page = provider_call(context.request_history_kline, quote_code(symbol, market), start=minimum,
         end=maximum, ktype=KLType.K_DAY, autype=AuType.QFQ, max_count=1000)
     if ret != RET_OK or prices.empty or next_page:
         raise RuntimeError('历史日K线获取失败，请检查行情权限及历史K线额度：' + str(prices))
-    record = {'symbol': symbol, 'adjustment': 'QFQ', 'start': selected_date, 'end': maximum,
-              'flow': flow.to_dict('records'), 'prices': prices.to_dict('records')}
+    record = {'symbol': symbol, 'adjustment': 'QFQ', 'start': minimum, 'end': maximum,
+              'flow': json.loads(flow.to_json(orient='records')), 'prices': json.loads(prices.to_json(orient='records'))}
     if len(RECORD_CACHE) >= 16:
         RECORD_CACHE.pop(next(iter(RECORD_CACHE)))
     RECORD_CACHE[key] = record
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix('.tmp')
+    temporary.write_text(json.dumps(record, ensure_ascii=False, allow_nan=False), encoding='utf-8')
+    temporary.replace(path)
     return record
 
 
@@ -204,7 +218,7 @@ def trading_dates(context, market='US'):
     if key in TRADING_DATES_CACHE:
         return TRADING_DATES_CACHE[key]
     from futu import RET_OK
-    ret, days = context.request_trading_days(market=MARKETS[market]['calendar'], start=bounds[0], end=bounds[1])
+    ret, days = provider_call(context.request_trading_days, market=MARKETS[market]['calendar'], start=bounds[0], end=bounds[1])
     if ret != RET_OK:
         raise RuntimeError('无法取得该市场交易日历：' + str(days))
     dates = sorted(item['time'] for item in days)
@@ -221,6 +235,20 @@ def finite(value):
         return value if math.isfinite(value) else None
     except (TypeError, ValueError):
         return None
+
+
+def cached_daily_flow(symbol, selected_date, market='US'):
+    """读取不可变历史日的真实资金缓存，缺失时交由接口补取。"""
+    path = ROOT.parent / '.data' / 'raw' / ((symbol if market == 'US' else market + '.' + symbol) + '.json')
+    try:
+        record = json.loads(path.read_text(encoding='utf-8'))
+        rows = [row for row in record['flow'] if str(row['capital_flow_item_time'])[:10] <= selected_date]
+        if any(str(row['capital_flow_item_time'])[:10] == selected_date for row in rows):
+            import pandas as pd
+            return pd.DataFrame(rows)
+    except (OSError, ValueError, KeyError):
+        pass
+    return None
 
 
 def cached_daily_quote(symbol, selected_date, market='US'):
@@ -256,6 +284,7 @@ def get_context():
 def fetch_snapshot(symbols, selected_date='', market='US'):
     """按日期读取日级资金流或最新快照，保持缓存隔离及请求限频。"""
     global LAST_FLOW_REQUEST
+    WATCHLIST[market] = set(symbols)
     cache_key = (market, tuple(symbols), selected_date)
     with LOCK:
         cached = CACHE.get(cache_key)
@@ -267,12 +296,13 @@ def fetch_snapshot(symbols, selected_date='', market='US'):
         if selected_date and selected_date not in dates:
             raise ValueError('所选日期不是可查询的已结束的该市场交易日，请选择其他日期。')
         codes = [quote_code(symbol, market) for symbol in symbols]
-        ret, snapshots = from_context.get_market_snapshot(codes)
-        if ret != RET_OK:
+        ret, snapshots = provider_call(from_context.get_market_snapshot, codes)
+        if ret != RET_OK and not selected_date:
             raise RuntimeError('行情快照获取失败：' + str(snapshots))
-        quotes = {str(row['code']): row for _, row in snapshots.iterrows()}
+        quotes = {str(row['code']): row for _, row in snapshots.iterrows()} if ret == RET_OK else {}
         rows = []
-        for symbol in symbols:
+        for position, symbol in enumerate(symbols):
+            job_progress(position, len(symbols), symbol)
             quote = quotes.get(quote_code(symbol, market))
             record = {'symbol': symbol, 'name': symbol, 'type': 'etf' if symbol in ETFS else 'stock',
                       'price': None, 'change': None, 'low': None, 'high': None,
@@ -300,6 +330,7 @@ def fetch_snapshot(symbols, selected_date='', market='US'):
                     except RuntimeError:
                         pass
                 if historical_quote:
+                    record['name'] = str(historical_quote.get('name', record['name']))
                     record.update(price=finite(historical_quote.get('close')),
                                   change=finite(historical_quote.get('change_rate')),
                                   low=finite(historical_quote.get('low')), high=finite(historical_quote.get('high')),
@@ -311,12 +342,18 @@ def fetch_snapshot(symbols, selected_date='', market='US'):
                 LAST_FLOW_REQUEST = time.monotonic()
                 if selected_date:
                     start = max(history_bounds(market)[0], (datetime.fromisoformat(selected_date) - timedelta(days=35)).date().isoformat())
-                    flow_ret, flow = from_context.get_capital_flow(quote_code(symbol, market), period_type=PeriodType.DAY,
-                                                                  start=start, end=selected_date)
+                    flow = cached_daily_flow(symbol, selected_date, market)
+                    if flow is None:
+                        flow_ret, flow = provider_call(from_context.get_capital_flow, quote_code(symbol, market), period_type=PeriodType.DAY,
+                                                      start=start, end=selected_date)
+                    else:
+                        flow_ret = RET_OK
                 else:
-                    flow_ret, flow = from_context.get_capital_flow(quote_code(symbol, market), period_type=PeriodType.INTRADAY)
+                    flow_ret, flow = provider_call(from_context.get_capital_flow, quote_code(symbol, market), period_type=PeriodType.INTRADAY)
                 if flow_ret == RET_OK and not flow.empty:
                     flow = flow.sort_values('capital_flow_item_time')
+                    if not selected_date:
+                        archive_flow(from_context, market, symbol, flow.to_dict('records'))
                     if selected_date:
                         for _, day in flow.tail(20).iterrows():
                             big, super_flow = finite(day.get('big_in_flow')), finite(day.get('super_in_flow'))
@@ -341,11 +378,157 @@ def fetch_snapshot(symbols, selected_date='', market='US'):
         result = {'source': 'futu-opend', **market_metadata(market),
                   'mode': 'history' if selected_date else 'live', 'date': selected_date,
                   'tradingDates': dates,
-                  'generatedAt': datetime.now(timezone.utc).isoformat(), 'rows': rows}
+                  'generatedAt': datetime.now(timezone.utc).isoformat(), 'rows': rows, 'serviceVersion': 2}
         if len(CACHE) >= 8:
             CACHE.pop(next(iter(CACHE)))
         CACHE[cache_key] = (time.monotonic(), result)
         return result
+
+
+def provider_call(method, *args, **kwargs):
+    """对瞬时网络或限频错误做一次退避重试，不重试无权限和无数据错误。"""
+    for attempt in range(2):
+        result = method(*args, **kwargs)
+        if result[0] == 0:
+            return result
+        message = str(result[1]).lower()
+        transient = any(word in message for word in ('频率', '限频', 'timeout', 'timed out', 'network', '网络', '连接中断'))
+        if not transient or attempt:
+            return result
+        time.sleep(31 if '频率' in message or '限频' in message else 2)
+    return result
+
+
+def archive_flow(context, market, symbol, records):
+    """留存已有真实分钟资金，并通过交易日类型确认普通或半日收盘时刻。"""
+    dates = sorted({str(row.get('capital_flow_item_time', ''))[:10] for row in records})
+    for date in dates:
+        if (market, date) not in SESSIONS:
+            ret, sessions = provider_call(context.request_trading_days, market=MARKETS[market]['calendar'], start=date, end=date)
+            if ret == 0:
+                for item in sessions:
+                    SESSIONS[(market, item['time'])] = item.get('trade_date_type')
+    return research.save_minutes(market, symbol, records, {date: SESSIONS.get((market, date)) for date in dates})
+
+
+def collect_symbol_minutes(context, market, symbol):
+    """按接口限频采集最近有效分钟资金，不能通过指定日期补取历史分钟。"""
+    global LAST_FLOW_REQUEST
+    from futu import PeriodType
+    wait = 1.05 - (time.monotonic() - LAST_FLOW_REQUEST)
+    if wait > 0:
+        time.sleep(wait)
+    LAST_FLOW_REQUEST = time.monotonic()
+    ret, flow = provider_call(context.get_capital_flow, quote_code(symbol, market), period_type=PeriodType.INTRADAY)
+    if ret != 0:
+        raise RuntimeError('分钟资金获取失败：' + str(flow))
+    return archive_flow(context, market, symbol, flow.to_dict('records')) if not flow.empty else []
+
+
+def fetch_research(symbol, as_of, lookback, span, percentile, minimum, days, kind, direction, market):
+    """读取真实日级与留存尾盘，汇总资金事件、近5日提醒和后续X日表现。"""
+    with LOCK:
+        context = get_context()
+        calendar = trading_dates(context, market)
+        as_of = as_of or calendar[-1]
+        eligible = [date for date in calendar if date <= as_of]
+        if not eligible or as_of not in calendar:
+            raise ValueError('研究截至日期不是已结束的交易日。')
+        job_progress(0, 3, '获取日级资金和前复权价格')
+        record = daily_record(symbol, history_bounds(market)[0], context, market)
+        minute_error = ''
+        job_progress(1, 3, '保存最近有效分钟资金')
+        try:
+            collect_symbol_minutes(context, market, symbol)
+        except RuntimeError as error:
+            minute_error = str(error)
+        job_progress(2, 3, '计算资金事件与后续走势')
+        result = research.build_research(record, calendar, market, symbol, as_of, lookback, span,
+                                         percentile, minimum, days, kind, direction)
+        result.update(market_metadata(market))
+        result['minuteError'] = minute_error
+        result['serviceVersion'] = 2
+        return result
+
+
+def job_progress(done, total, message):
+    """更新后台任务进度，使大观察池查询不依赖单个长时间HTTP连接。"""
+    identity = getattr(JOB_LOCAL, 'identity', None)
+    with JOB_LOCK:
+        if identity in JOBS:
+            JOBS[identity]['progress'] = {'done': done, 'total': total, 'message': message}
+
+
+def run_job(identity, function, args):
+    """在唯一行情工作线程执行任务，避免多个窗口抢占OpenD请求额度。"""
+    JOB_LOCAL.identity = identity
+    try:
+        return function(*args)
+    finally:
+        JOB_LOCAL.identity = None
+
+
+def submit_job(key, function, args):
+    """合并重复请求并保留短期结果，限制队列长度以免反复切日期堆积任务。"""
+    with JOB_LOCK:
+        now = time.monotonic()
+        for identity, job in list(JOBS.items()):
+            if job['future'].done() and now - job['created'] > 600:
+                del JOBS[identity]
+        for identity, job in JOBS.items():
+            if job['key'] == key and (not job['future'].done() or now - job['created'] < 60) and not (job['future'].done() and job['future'].exception()):
+                return identity
+        if sum(not job['future'].done() for job in JOBS.values()) >= 12:
+            raise RuntimeError('查询队列已满，请等待当前任务完成后重试。')
+        identity = secrets.token_hex(12)
+        JOBS[identity] = {'key': key, 'created': now, 'progress': {'done': 0, 'total': 1, 'message': '等待行情查询'},
+                          'future': WORKER.submit(run_job, identity, function, args)}
+        return identity
+
+
+def job_result(identity):
+    """返回任务结果或进度，并把权限、参数及瞬时失败明确区分。"""
+    with JOB_LOCK:
+        job = JOBS.get(identity)
+        if not job:
+            return 404, {'error': '查询任务已过期，请重新查询。'}
+        future, progress = job['future'], job['progress']
+    if not future.done():
+        return 202, {'jobId': identity, 'progress': progress, 'retryAfter': 1}
+    try:
+        return 200, future.result()
+    except ValueError as error:
+        return 400, {'error': str(error)}
+    except RuntimeError as error:
+        return 503, {'error': str(error)}
+    except Exception as error:
+        print('行情任务异常:', type(error).__name__, flush=True)
+        return 502, {'error': '行情查询暂时失败，请重试；若持续失败请检查OpenD连接及行情权限。'}
+
+
+def collect_watch_minutes():
+    """服务运行期间每三分钟留存观察池分钟资金，优先在尾盘附近采集。"""
+    while not COLLECTOR_STOP.wait(180):
+        for market, symbols in list(WATCHLIST.items()):
+            now = datetime.now(ZoneInfo(MARKETS[market]['timezone']))
+            close_hour = {'US': 16, 'HK': 16, 'CN': 15}[market]
+            if not symbols or now.weekday() >= 5 or not 12 <= now.hour <= close_hour:
+                continue
+            if any(not job['future'].done() for job in list(JOBS.values())):
+                continue
+            for symbol in sorted(symbols):
+                with JOB_LOCK:
+                    query_pending = any(not job['future'].done() for job in JOBS.values())
+                if query_pending:
+                    break
+                if COLLECTOR_STOP.is_set():
+                    return
+                try:
+                    with LOCK:
+                        collect_symbol_minutes(get_context(), market, symbol)
+                except Exception as error:
+                    print('分钟留存暂不可用:', market, symbol, type(error).__name__, flush=True)
+                    break
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -387,7 +570,7 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         """校验请求后获取资金流；静态请求只允许访问已知页面资产。"""
         parsed = urlsplit(self.path)
-        if parsed.path in {'/api/snapshot', '/api/validation', '/api/path', '/api/main-window'}:
+        if parsed.path in {'/api/snapshot', '/api/validation', '/api/path', '/api/main-window', '/api/research', '/api/jobs', '/api/health'}:
             origin = self.headers.get('Origin', '')
             own_origins = {f'http://127.0.0.1:{PORT}', f'http://localhost:{PORT}'}
             if origin and origin not in ALLOWED_ORIGINS | own_origins:
@@ -400,6 +583,13 @@ class Handler(SimpleHTTPRequestHandler):
             market = query.get('market', ['US'])[0].upper()
             if market not in MARKETS:
                 self.respond(400, {'error': '市场代码无效。'})
+                return
+            if parsed.path == '/api/jobs':
+                status, payload = job_result(query.get('id', [''])[0])
+                self.respond(status, payload)
+                return
+            if parsed.path == '/api/health':
+                self.respond(200, {'serviceVersion': 2, 'source': 'futu-opend', 'features': ['jobs', 'research', 'minute-archive']})
                 return
             if parsed.path == '/api/validation' and market != 'US':
                 self.respond(400, {'error': '现有有效性研究只覆盖美股，不能用于其他市场。'})
@@ -429,36 +619,33 @@ class Handler(SimpleHTTPRequestHandler):
                 except ValueError:
                     self.respond(400, {'error': '历史日期需在最近一年内，且早于当前市场当地日期。'})
                     return
-            if parsed.path in {'/api/path', '/api/main-window'}:
-                query = parse_qs(parsed.query)
-                try:
+            try:
+                if parsed.path == '/api/research':
+                    symbol = normalize_symbol(query.get('symbol', [''])[0], market)
+                    days, lookback, span = (int(query.get(name, [str(default)])[0]) for name, default in [('days', 20), ('lookback', 120), ('span', 1)])
+                    percentile, minimum = float(query.get('percentile', ['90'])[0]), float(query.get('minimum', ['0'])[0])
+                    kind, direction = query.get('kind', ['daily'])[0], query.get('direction', ['out'])[0]
+                    if not (1 <= days <= 120 and 20 <= lookback <= 250 and 1 <= span <= 10 and 50 <= percentile <= 99 and math.isfinite(minimum) and 0 <= minimum <= 1e12 and kind in {'daily', 'tail10', 'tail20'} and direction in {'in', 'out', 'both'}):
+                        raise ValueError('研究参数无效，请检查交易日数和阈值。')
+                    function, args = fetch_research, (symbol, selected_date, lookback, span, percentile, minimum, days, kind, direction, market)
+                elif parsed.path in {'/api/path', '/api/main-window'}:
                     symbol = normalize_symbol(query.get('symbol', [''])[0], market)
                     days = int(query.get('days', ['20'])[0])
                     if not selected_date or not 1 <= days <= 120:
-                        raise ValueError
-                except ValueError:
-                    self.respond(400, {'error': '请填写当前市场的有效股票代码、历史交易日及 1 至 120 个后续交易日。'})
-                    return
-                try:
-                    fetcher = fetch_main_window if parsed.path == '/api/main-window' else fetch_path
-                    self.respond(200, fetcher(symbol, selected_date, days, market))
-                except ValueError as error:
-                    self.respond(400, {'error': str(error)})
-                except RuntimeError as error:
-                    self.respond(503, {'error': str(error)})
-                except Exception:
-                    self.respond(502, {'error': '历史区间查询失败，请检查 OpenD 连接及行情权限。'})
-                return
-            try:
-                self.respond(200, fetch_snapshot(symbols, selected_date, market))
+                        raise ValueError('请填写有效股票代码、已结束交易日及1至120个交易日。')
+                    function = fetch_main_window if parsed.path == '/api/main-window' else fetch_path
+                    args = (symbol, selected_date, days, market)
+                else:
+                    function, args = fetch_snapshot, (symbols, selected_date, market)
+                identity = submit_job((parsed.path, repr(args)), function, args)
+                status, payload = job_result(identity)
+                self.respond(status, payload)
             except ValueError as error:
                 self.respond(400, {'error': str(error)})
             except RuntimeError as error:
                 self.respond(503, {'error': str(error)})
-            except Exception:
-                self.respond(502, {'error': '行情服务异常，请确认 OpenD 连接和行情权限。'})
             return
-        if parsed.path not in {'/', '/index.html', '/guide.html', '/windows-package.zip', '/styles.css', '/app.js', '/favicon.ico'}:
+        if parsed.path not in {'/', '/index.html', '/guide.html', '/windows-package.zip', '/styles.css', '/app.js', '/research.js', '/favicon.ico'}:
             self.respond(404, {'error': '页面不存在。'})
             return
         if parsed.path == '/favicon.ico':
@@ -478,11 +665,14 @@ def main():
         raise SystemExit('远程部署必须设置 FLOW_TOKEN 和 FLOW_ALLOWED_ORIGINS，并通过 HTTPS 反向代理访问。')
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f'Local: http://127.0.0.1:{PORT}', flush=True)
+    threading.Thread(target=collect_watch_minutes, daemon=True).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        COLLECTOR_STOP.set()
+        WORKER.shutdown(wait=False, cancel_futures=True)
         server.server_close()
         if QUOTE_CONTEXT is not None:
             QUOTE_CONTEXT.close()
