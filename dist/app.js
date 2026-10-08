@@ -58,8 +58,8 @@ async function requestJson(endpoint,onProgress=()=>{},signal) {
 const initial=new URL(endpoint),deadline=Date.now()+480000;let target=initial;
 while(Date.now()<deadline){if(signal?.aborted)throw new DOMException('已停止查询','AbortError');let response,payload;
 for(let attempt=0;attempt<2;attempt++){try{response=await fetch(target,{headers:state.token?{Authorization:'Bearer '+state.token}:{},signal:signal?AbortSignal.any([signal,AbortSignal.timeout(25000)]):AbortSignal.timeout(25000),cache:'no-store'});payload=await response.json();if([429,502,503,504].includes(response.status)&&attempt===0){await waitForRequest(1500,signal);continue;}break;}catch(error){if(signal?.aborted)throw error;if(attempt)throw new Error(error.name==='TimeoutError'?'行情连接超时；后台任务可能仍在执行，请稍后重试。':'无法连接行情服务，请检查OpenD、服务地址和HTTPS配置。');await waitForRequest(1500,signal);}}
-if(response.status===202){if(!/^[a-f0-9]{24}$/.test(payload.jobId||''))throw new Error('查询任务格式错误。');onProgress(payload.progress||{});target=new URL(initial);target.pathname=target.pathname.replace(/\/(snapshot|path|main-window|research|validation)$/, '/jobs');target.search='';target.searchParams.set('id',payload.jobId);await waitForRequest(1000,signal);continue;}
-if(!response.ok)throw new Error(response.status===404&&initial.pathname.endsWith('/research')?'本机服务尚未支持资金研究，请下载新版项目包并重启服务。':payload.error||'行情请求失败（'+response.status+'）。');return payload;}
+if(response.status===202){if(!/^[a-f0-9]{24}$/.test(payload.jobId||''))throw new Error('查询任务格式错误。');onProgress(payload.progress||{});target=new URL(initial);target.pathname=target.pathname.replace(/\/(snapshot|path|main-window|research|validation|alpaca-tail)$/, '/jobs');target.search='';target.searchParams.set('id',payload.jobId);await waitForRequest(1000,signal);continue;}
+if(!response.ok)throw new Error(response.status===404&&/\/(research|alpaca-tail|alpaca-status)$/.test(initial.pathname)?'本机服务尚未支持此研究功能，请下载新版项目包并重启服务。':payload.error||'行情请求失败（'+response.status+'）。');return payload;}
 throw new Error('查询等待超过8分钟，请缩小观察池或稍后重试。');
 }
 /** 等待重试或轮询，并允许用户取消扫描。 */

@@ -1,4 +1,4 @@
-"""资金流看板的本地 HTTP 服务：仅使用富途行情接口，不访问交易接口。"""
+"""资金流看板的本地 HTTP 服务：读取富途与 Alpaca 行情，不执行交易。"""
 import hmac
 import json
 import math
@@ -8,6 +8,7 @@ import socket
 import secrets
 from concurrent.futures import ThreadPoolExecutor
 import research
+import alpaca_data
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -503,7 +504,7 @@ def job_result(identity):
         return 503, {'error': str(error)}
     except Exception as error:
         print('行情任务异常:', type(error).__name__, flush=True)
-        return 502, {'error': '行情查询暂时失败，请重试；若持续失败请检查OpenD连接及行情权限。'}
+        return 502, {'error': '行情查询暂时失败，请重试；若持续失败请检查数据源连接及行情权限。'}
 
 
 def collect_watch_minutes():
@@ -570,7 +571,7 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         """校验请求后获取资金流；静态请求只允许访问已知页面资产。"""
         parsed = urlsplit(self.path)
-        if parsed.path in {'/api/snapshot', '/api/validation', '/api/path', '/api/main-window', '/api/research', '/api/jobs', '/api/health'}:
+        if parsed.path in {'/api/snapshot', '/api/validation', '/api/path', '/api/main-window', '/api/research', '/api/jobs', '/api/health', '/api/alpaca-status', '/api/alpaca-tail'}:
             origin = self.headers.get('Origin', '')
             own_origins = {f'http://127.0.0.1:{PORT}', f'http://localhost:{PORT}'}
             if origin and origin not in ALLOWED_ORIGINS | own_origins:
@@ -589,7 +590,32 @@ class Handler(SimpleHTTPRequestHandler):
                 self.respond(status, payload)
                 return
             if parsed.path == '/api/health':
-                self.respond(200, {'serviceVersion': 2, 'source': 'futu-opend', 'features': ['jobs', 'research', 'minute-archive']})
+                self.respond(200, {'serviceVersion': 3, 'source': 'futu-opend', 'features': ['jobs', 'research', 'minute-archive', 'alpaca-tail']})
+                return
+            if parsed.path == '/api/alpaca-status':
+                self.respond(200, alpaca_data.status())
+                return
+            if parsed.path == '/api/alpaca-tail':
+                try:
+                    if market != 'US':
+                        raise ValueError('Alpaca 尾盘验证仅支持美股和 ETF。')
+                    symbol = normalize_symbol(query.get('symbol', ['MU'])[0], 'US')
+                    date = query.get('date', [''])[0]
+                    days = int(query.get('days', ['20'])[0])
+                    threshold = float(query.get('threshold', ['100000'])[0])
+                    if not date or not 1 <= days <= 60 or not math.isfinite(threshold) or not 1000 <= threshold <= 1e9:
+                        raise ValueError('请填写历史日期、1至60个后续交易日及有效大额成交门槛。')
+                    datetime.strptime(date, '%Y-%m-%d')
+                    if not alpaca_data.status()['configured']:
+                        raise ValueError('请先在本机项目 .env 配置 Alpaca 的两项密钥，保存后即可查询。')
+                    args = (symbol, date, days, threshold, job_progress)
+                    identity = submit_job(('alpaca-tail', symbol, date, days, threshold), alpaca_data.fetch_tail, args)
+                    status, payload = job_result(identity)
+                    self.respond(status, payload)
+                except ValueError as error:
+                    self.respond(400, {'error': str(error)})
+                except RuntimeError as error:
+                    self.respond(503, {'error': str(error)})
                 return
             if parsed.path == '/api/validation' and market != 'US':
                 self.respond(400, {'error': '现有有效性研究只覆盖美股，不能用于其他市场。'})
@@ -645,7 +671,7 @@ class Handler(SimpleHTTPRequestHandler):
             except RuntimeError as error:
                 self.respond(503, {'error': str(error)})
             return
-        if parsed.path not in {'/', '/index.html', '/guide.html', '/windows-package.zip', '/styles.css', '/app.js', '/research.js', '/favicon.ico'}:
+        if parsed.path not in {'/', '/index.html', '/guide.html', '/windows-package.zip', '/styles.css', '/app.js', '/research.js', '/alpaca.js', '/favicon.ico'}:
             self.respond(404, {'error': '页面不存在。'})
             return
         if parsed.path == '/favicon.ico':
