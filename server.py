@@ -9,6 +9,7 @@ import secrets
 from concurrent.futures import ThreadPoolExecutor
 import research
 import alpaca_data
+import chips
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -386,6 +387,13 @@ def fetch_snapshot(symbols, selected_date='', market='US'):
         return result
 
 
+def fetch_chips(symbol, date, market):
+    """复用只读行情连接和限频队列，隔离跨市场筹码观察数据。"""
+    with LOCK:
+        return chips.fetch(get_context(), provider_call, ROOT.parent, symbol, quote_code(symbol, market),
+                           market, MARKETS[market]['timezone'], date)
+
+
 def provider_call(method, *args, **kwargs):
     """对瞬时网络或限频错误做一次退避重试，不重试无权限和无数据错误。"""
     for attempt in range(2):
@@ -571,7 +579,7 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         """校验请求后获取资金流；静态请求只允许访问已知页面资产。"""
         parsed = urlsplit(self.path)
-        if parsed.path in {'/api/snapshot', '/api/validation', '/api/path', '/api/main-window', '/api/research', '/api/jobs', '/api/health', '/api/alpaca-status', '/api/alpaca-tail'}:
+        if parsed.path in {'/api/snapshot', '/api/validation', '/api/path', '/api/main-window', '/api/research', '/api/jobs', '/api/health', '/api/alpaca-status', '/api/alpaca-tail', '/api/chips'}:
             origin = self.headers.get('Origin', '')
             own_origins = {f'http://127.0.0.1:{PORT}', f'http://localhost:{PORT}'}
             if origin and origin not in ALLOWED_ORIGINS | own_origins:
@@ -590,7 +598,21 @@ class Handler(SimpleHTTPRequestHandler):
                 self.respond(status, payload)
                 return
             if parsed.path == '/api/health':
-                self.respond(200, {'serviceVersion': 3, 'source': 'futu-opend', 'features': ['jobs', 'research', 'minute-archive', 'alpaca-tail']})
+                self.respond(200, {'serviceVersion': 3, 'source': 'futu-opend', 'features': ['jobs', 'research', 'minute-archive', 'alpaca-tail', 'chips']})
+                return
+            if parsed.path == '/api/chips':
+                try:
+                    symbol = normalize_symbol(query.get('symbol', ['MU'])[0], market)
+                    date = query.get('date', [''])[0]
+                    if date:
+                        datetime.strptime(date, '%Y-%m-%d')
+                    identity = submit_job(('chips', market, symbol, date), fetch_chips, (symbol, date, market))
+                    status, payload = job_result(identity)
+                    self.respond(status, payload)
+                except ValueError as error:
+                    self.respond(400, {'error': str(error)})
+                except RuntimeError as error:
+                    self.respond(503, {'error': str(error)})
                 return
             if parsed.path == '/api/alpaca-status':
                 self.respond(200, alpaca_data.status())
@@ -671,7 +693,7 @@ class Handler(SimpleHTTPRequestHandler):
             except RuntimeError as error:
                 self.respond(503, {'error': str(error)})
             return
-        if parsed.path not in {'/', '/index.html', '/guide.html', '/windows-package.zip', '/styles.css', '/app.js', '/research.js', '/alpaca.js', '/favicon.ico'}:
+        if parsed.path not in {'/', '/index.html', '/guide.html', '/windows-package.zip', '/styles.css', '/app.js', '/research.js', '/alpaca.js', '/chips.js', '/favicon.ico'}:
             self.respond(404, {'error': '页面不存在。'})
             return
         if parsed.path == '/favicon.ico':
