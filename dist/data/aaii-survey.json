@@ -1,0 +1,12 @@
+{
+  "source": "AAII",
+  "url": "https://www.aaii.com/sentimentsurvey",
+  "verifiedAt": "2026-11-06T10:04:10Z",
+  "verification": "人工核验官方公开页面，供程序读取被拒绝时作为有日期的周度样本；不自动视为实时数据。",
+  "rows": [
+    {"weekEnding": "2026-11-04", "publishedDate": "2026-11-05", "bullish": 34.1, "neutral": 17.5, "bearish": 48.4},
+    {"weekEnding": "2026-10-28", "publishedDate": "2026-10-29", "bullish": 37.8, "neutral": 20.7, "bearish": 41.4},
+    {"weekEnding": "2026-10-21", "publishedDate": "2026-10-22", "bullish": 36.9, "neutral": 17.3, "bearish": 45.8},
+    {"weekEnding": "2026-10-14", "publishedDate": "2026-10-15", "bullish": 38.7, "neutral": 19.7, "bearish": 41.6}
+  ]
+}

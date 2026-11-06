@@ -10,6 +10,8 @@ from concurrent.futures import ThreadPoolExecutor
 import research
 import alpaca_data
 import chips
+import intelligence
+from functools import partial
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -394,6 +396,123 @@ def fetch_chips(symbol, date, market):
                            market, MARKETS[market]['timezone'], date)
 
 
+def intelligence_date(selected_date, market):
+    """按真实交易日历及当地收盘时间选择已完成日线，处理半日市和夏令时。"""
+    now = datetime.now(ZoneInfo(MARKETS[market]['timezone']))
+    selected = datetime.strptime(selected_date, '%Y-%m-%d').date() if selected_date else now.date()
+    if selected > now.date() or selected < now.date() - timedelta(days=1825):
+        raise ValueError('请选择最近五年内、不晚于当前市场日期的日期。')
+    with LOCK:
+        ret, days = provider_call(get_context().request_trading_days, market=MARKETS[market]['calendar'],
+                                 start=(selected - timedelta(days=20)).isoformat(), end=selected.isoformat())
+    if ret != 0:
+        raise RuntimeError('无法核验交易日历，未使用可能未完成的日线。')
+    eligible = []
+    for item in days:
+        kind = item.get('trade_date_type')
+        clock = ({'US': '13:00', 'HK': '12:00'}.get(market) if kind == 'HALF' else
+                 {'US': '16:00', 'HK': '16:00', 'CN': '15:00'}.get(market) if kind == 'WHOLE' else None)
+        if not clock:
+            continue
+        closing = datetime.fromisoformat(item['time'] + 'T' + clock).replace(tzinfo=now.tzinfo) + timedelta(minutes=5)
+        if closing <= now:
+            eligible.append(item['time'])
+    if not eligible:
+        raise ValueError('该日期前没有可核验的已完成交易日。')
+    if selected_date and selected < now.date() and selected_date not in eligible:
+        raise ValueError('所选日期不是该市场已完成交易日，未自动换日。')
+    return max(eligible)
+
+
+def intelligence_daily(symbol, as_of, market):
+    """以单次受限日线请求补充历史，不在额度不足时循环重试。"""
+    from futu import AuType, KLType
+    start = (datetime.fromisoformat(as_of).date() - timedelta(days=1200)).isoformat()
+    with LOCK:
+        ret, frame, next_page = provider_call(get_context().request_history_kline, quote_code(symbol, market),
+            start=start, end=as_of, ktype=KLType.K_DAY, autype=AuType.QFQ, max_count=1000)
+    if ret != 0 or next_page:
+        raise RuntimeError('富途历史日线不可用或不完整，请检查权限及历史K线额度。')
+    return [{'date': str(row['time_key'])[:10], **{key: finite(row.get(key)) for key in ('open', 'high', 'low', 'close', 'volume')}}
+            for row in frame.to_dict('records')]
+
+
+def intelligence_breadth(symbols, market, historical=False):
+    """统计同日期、同交易时段的观察池涨跌广度，不冒充全市场成交多空比例。"""
+    if historical:
+        return intelligence.unavailable('历史广度没有同期快照，不以当前观察池行情替代。')
+    with LOCK:
+        ret, quotes = provider_call(get_context().get_market_snapshot, [quote_code(symbol, market) for symbol in symbols])
+    if ret != 0:
+        raise RuntimeError('观察池行情快照不可用。')
+    now = datetime.now(ZoneInfo(MARKETS[market]['timezone']))
+    premarket = market == 'US' and '04:00' <= now.strftime('%H:%M') < '09:30'
+    items = []
+    for row in quotes.to_dict('records'):
+        stamp = str(row.get('update_time', ''))
+        if premarket:
+            change = finite(row.get('pre_change_rate')) if finite(row.get('pre_price')) and stamp[:10] == now.date().isoformat() else None
+        else:
+            price, previous = finite(row.get('last_price')), finite(row.get('prev_close_price'))
+            change = (price / previous - 1) * 100 if price is not None and previous and previous > 0 else None
+        if change is not None and stamp:
+            items.append({'symbol': str(row['code']), 'change': change, 'time': stamp})
+    if not items:
+        return intelligence.unavailable('没有可核验的同期观察池报价。', '富途 OpenD')
+    date = max(row['time'][:10] for row in items)
+    valid = [row for row in items if row['time'][:10] == date]
+    up, down = sum(row['change'] > 0 for row in valid), sum(row['change'] < 0 for row in valid)
+    return {'status': 'available', 'source': '富途 OpenD', 'date': date, 'time': max(row['time'] for row in valid),
+            'phase': '盘前' if premarket else '常规盘价格快照', 'requested': len(symbols), 'valid': len(valid),
+            'up': up, 'down': down, 'flat': len(valid) - up - down,
+            'advanceDeclineRatio': up / down if down else None,
+            'scope': '当前观察池；仅比较同日期同口径报价，不代表全市场多空持仓。'}
+
+
+def intelligence_distribution(symbol, as_of, market):
+    """只展示与指标截至日匹配的小单实际买卖分类，不能据此认定散户割肉。"""
+    global LAST_FLOW_REQUEST
+    with LOCK:
+        context = get_context()
+        ret, frame = provider_call(context.get_capital_distribution, quote_code(symbol, market))
+        result = chips.distribution(frame.to_dict('records'), as_of) if ret == 0 else intelligence.unavailable('小单成交分布不可用。')
+        if result['status'] != 'available':
+            from futu import PeriodType
+            wait = 1.05 - (time.monotonic() - LAST_FLOW_REQUEST)
+            if wait > 0:
+                time.sleep(wait)
+            LAST_FLOW_REQUEST = time.monotonic()
+            ret, flows = provider_call(context.get_capital_flow, quote_code(symbol, market),
+                                       period_type=PeriodType.DAY, start=as_of, end=as_of)
+            if ret == 0:
+                matched = next((row for row in flows.to_dict('records') if str(row.get('capital_flow_item_time', ''))[:10] == as_of), None)
+                net = finite(matched.get('sml_in_flow')) if matched else None
+                if net is not None:
+                    result = {'status': 'net-only', 'net': net, 'time': str(matched['capital_flow_item_time']),
+                              'reason': '双向成交分布未留存；此处只显示同日真实小单净额，不推算买卖比例。'}
+    result.update(source='富途 OpenD', asOf=as_of,
+                  scope='小单成交规模代理，不代表已识别的散户账户、亏损卖出或持仓比例。')
+    return result
+
+
+def fetch_intelligence(symbols, date, market):
+    """获取市场风险模块，复用行情日历及异步任务的进度和缓存。"""
+    job_progress(0, 3, '核验市场收盘日历')
+    as_of = intelligence_date(date, market)
+    today = datetime.now(ZoneInfo(MARKETS[market]['timezone'])).date().isoformat()
+    job_progress(1, 3, '读取基准日线、VIX及散户调查')
+    return intelligence.overview(market, as_of, symbols, partial(intelligence_daily, market=market),
+                                 partial(intelligence_breadth, market=market, historical=bool(date and date < today)))
+
+
+def fetch_stock_intelligence(symbol, date, horizon, market):
+    """独立查询个股技术和期权结构；不触碰任何交易账户或订单。"""
+    as_of = intelligence_date(date, market)
+    job_progress(1, 3, '读取完整日线、历史回撤和延时期权链')
+    return intelligence.stock_report(symbol, market, as_of, date, horizon,
+        partial(intelligence_daily, market=market), partial(intelligence_distribution, market=market))
+
+
 def provider_call(method, *args, **kwargs):
     """对瞬时网络或限频错误做一次退避重试，不重试无权限和无数据错误。"""
     for attempt in range(2):
@@ -579,7 +698,7 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         """校验请求后获取资金流；静态请求只允许访问已知页面资产。"""
         parsed = urlsplit(self.path)
-        if parsed.path in {'/api/snapshot', '/api/validation', '/api/path', '/api/main-window', '/api/research', '/api/jobs', '/api/health', '/api/alpaca-status', '/api/alpaca-tail', '/api/chips'}:
+        if parsed.path in {'/api/snapshot', '/api/validation', '/api/path', '/api/main-window', '/api/research', '/api/jobs', '/api/health', '/api/alpaca-status', '/api/alpaca-tail', '/api/chips', '/api/intelligence', '/api/stock-intelligence'}:
             origin = self.headers.get('Origin', '')
             own_origins = {f'http://127.0.0.1:{PORT}', f'http://localhost:{PORT}'}
             if origin and origin not in ALLOWED_ORIGINS | own_origins:
@@ -598,7 +717,31 @@ class Handler(SimpleHTTPRequestHandler):
                 self.respond(status, payload)
                 return
             if parsed.path == '/api/health':
-                self.respond(200, {'serviceVersion': 3, 'source': 'futu-opend', 'features': ['jobs', 'research', 'minute-archive', 'alpaca-tail', 'chips']})
+                self.respond(200, {'serviceVersion': 4, 'source': 'futu-opend', 'features': ['jobs', 'research', 'minute-archive', 'alpaca-tail', 'chips', 'intelligence', 'stock-intelligence']})
+                return
+            if parsed.path in {'/api/intelligence', '/api/stock-intelligence'}:
+                try:
+                    date = query.get('date', [''])[0]
+                    if date and datetime.strptime(date, '%Y-%m-%d').date().isoformat() != date:
+                        raise ValueError('日期格式不正确。')
+                    if parsed.path == '/api/intelligence':
+                        symbols = list(dict.fromkeys(normalize_symbol(item, market) for item in query.get('symbols', [','.join(MARKETS[market]['symbols'])])[0].split(',')))
+                        if not 1 <= len(symbols) <= 60:
+                            raise ValueError('观察池必须包含1至60个代码。')
+                        function, args = fetch_intelligence, (symbols, date, market)
+                    else:
+                        symbol = normalize_symbol(query.get('symbol', ['QQQ'])[0], market)
+                        horizon = int(query.get('horizon', ['30'])[0])
+                        if not 1 <= horizon <= 90:
+                            raise ValueError('期权范围需在1至90个自然日内。')
+                        function, args = fetch_stock_intelligence, (symbol, date, horizon, market)
+                    identity = submit_job((parsed.path, repr(args)), function, args)
+                    status, payload = job_result(identity)
+                    self.respond(status, payload)
+                except ValueError as error:
+                    self.respond(400, {'error': str(error)})
+                except RuntimeError as error:
+                    self.respond(503, {'error': str(error)})
                 return
             if parsed.path == '/api/chips':
                 try:
@@ -693,7 +836,7 @@ class Handler(SimpleHTTPRequestHandler):
             except RuntimeError as error:
                 self.respond(503, {'error': str(error)})
             return
-        if parsed.path not in {'/', '/index.html', '/guide.html', '/windows-package.zip', '/styles.css', '/app.js', '/research.js', '/alpaca.js', '/chips.js', '/favicon.ico'}:
+        if parsed.path not in {'/', '/index.html', '/guide.html', '/windows-package.zip', '/styles.css', '/app.js', '/research.js', '/alpaca.js', '/chips.js', '/intelligence.js', '/intelligence.css', '/data/aaii-survey.json', '/favicon.ico'}:
             self.respond(404, {'error': '页面不存在。'})
             return
         if parsed.path == '/favicon.ico':
