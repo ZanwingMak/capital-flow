@@ -123,15 +123,19 @@ def summarize_events(events, days):
     return summary
 
 
-def build_research(record, calendar, market, symbol, as_of, lookback, span, percentile, minimum, days, kind, direction):
-    """使用此前60个同跨度窗口设定异常阈值，构建资金事件和后续实际价格。"""
-    prices = {str(row['time_key'])[:10]: row for row in record['prices']}
+def build_research(record, calendar, market, symbol, as_of, lookback, span, percentile, minimum, days, kind, direction, mode='retrospective'):
+    """用此前60个同口径窗口筛选事件；严格模式截断后续路径，默认保留事后复盘。"""
+    if mode not in {'retrospective', 'strict-as-of'}:
+        raise ValueError('研究mode必须为retrospective或strict-as-of。')
+    path_calendar = [day for day in calendar if day <= as_of] if mode == 'strict-as-of' else calendar
+    prices = {str(row['time_key'])[:10]: row for row in record['prices']
+              if mode != 'strict-as-of' or str(row['time_key'])[:10] <= as_of}
     flows = {str(row['capital_flow_item_time'])[:10]: main_amount(row) for row in record['flow']}
     eligible = [day for day in calendar if day <= as_of]
     selected = eligible[-lookback:]
     windows, events = [], []
-    archives = [read_minutes(path) for path in sorted((DATA / market / symbol).glob('*.json'))]
-    archived = {item.get('date'): item for item in archives if item}
+    archives = [read_minutes(path) for path in sorted((DATA / market / symbol).glob('*.json')) if path.stem <= as_of]
+    archived = {item.get('date'): item for item in archives if item.get('date') in eligible}
     tail = {}
     for date, item in archived.items():
         tail[date] = {str(size): tail_window(item, size) for size in (10, 20)}
@@ -146,8 +150,8 @@ def build_research(record, calendar, market, symbol, as_of, lookback, span, perc
                       (value < 0 if direction == 'out' or direction == 'both' and amount is not None and amount < 0 else value > 0)]
         threshold = quantile(candidates, percentile) if len(candidates) >= 10 else None
         flag = (amount is not None and (amount < 0 if direction == 'out' else amount > 0 if direction == 'in' else amount != 0))
-        if date in selected and flag and abs(amount) >= minimum and (kind != 'daily' or threshold is not None and abs(amount) >= threshold):
-            path = future_rows(prices, calendar, date, days)
+        if date in selected and flag and threshold is not None and abs(amount) >= max(minimum, threshold):
+            path = future_rows(prices, path_calendar, date, days)
             events.append({'date': date, 'start': interval[0] if kind == 'daily' else date,
                            'main': amount, 'threshold': max(minimum, threshold) if threshold is not None else minimum,
                            'baselineSamples': len(candidates), 'direction': 'out' if amount < 0 else 'in', 'path': path,
@@ -156,15 +160,19 @@ def build_research(record, calendar, market, symbol, as_of, lookback, span, perc
         windows.append(amount)
     events.reverse()
     available = [date for date in selected if tail.get(date, {}).get(kind[-2:], {}).get('complete')] if kind != 'daily' else [date for date in selected if flows.get(date) is not None]
-    historical_archives = [item for item in archives if item.get('date', '') <= as_of]
-    latest_archive = historical_archives[-1] if historical_archives else {}
+    latest_archive = archived[max(archived)] if archived else {}
     return {'source': 'futu-opend', 'market': market, 'symbol': symbol,
-            'name': next((str(row['name']) for row in record['prices'] if row.get('name')), symbol),
+            'name': next((str(row['name']) for row in record['prices'] if row.get('name') and str(row['time_key'])[:10] <= as_of), symbol),
             'asOf': eligible[-1] if eligible else as_of, 'start': selected[0] if selected else as_of,
+            'mode': mode, 'outcomeThrough': path_calendar[-1] if path_calendar else as_of,
+            'timeSemantics': ('严格截至当时（strict-as-of）：事件、分钟档案、价格路径及统计均截断于asOf。' if mode == 'strict-as-of' else
+                              '事后复盘（retrospective，默认）：asOf限制资金事件及分钟档案，后续结果可使用asOf之后的价格。'),
+            'pointInTimeVerified': False,
+            'dataRevisionNote': '按交易日期限制可观察范围；当前前复权历史及分钟留存没有历史发布/修订版本，不能证明当时实际可得的数据版本。',
             'adjustment': 'QFQ', 'kind': kind, 'direction': direction, 'lookback': lookback, 'span': span,
             'percentile': percentile, 'minimum': minimum, 'requestedDays': days,
             'events': events, 'recentAlerts': [event for event in events if event['recent'] and event['direction'] == 'out'],
             'summary': summarize_events(events, days), 'coverage': {'requested': len(selected), 'available': len(available)},
             'tailLatest': {'date': latest_archive.get('date'), 'windows': [tail_window(latest_archive, size) for size in (10, 20)]},
             'minuteDates': [date for date in sorted(tail) if any(value['complete'] for value in tail[date].values())],
-            'method': '主力=大单+特大单；尾盘=累计值之差。日级异常阈值使用事件前60个同跨度窗口中的同向样本，至少10个有效样本；最近提醒覆盖末5个已结束交易日。事件可能重叠，结果仅为描述性观察，不代表独立预测证据。'}
+            'method': '主力=大单+特大单；尾盘=完整分钟累计值之差。日级与尾盘异常均使用事件前60个同口径窗口中的同向绝对值分位数，至少10个有效样本，并同时达到金额下限；最近提醒覆盖末5个已结束交易日。事件可能重叠，结果仅为描述性观察，不代表独立预测证据。'}

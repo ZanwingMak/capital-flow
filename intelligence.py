@@ -225,10 +225,13 @@ def technical_report(rows, source, as_of):
     bull = close > ma['20'] > ma['50'] and slope > 0
     state = 'bearish' if bear else 'bullish' if bull else 'transition'
     change = (close / previous - 1) * 100
-    distribution = []
+    distribution, covered_pairs = [], 0
     for i in range(max(1, len(rows) - 20), len(rows)):
-        if volume[i] is not None and volume[i - 1] is not None and volume[i] > volume[i - 1] and (closes[i] / closes[i - 1] - 1) * 100 <= -.2:
-            distribution.append(rows[i]['date'])
+        if volume[i] is not None and volume[i - 1] is not None:
+            covered_pairs += 1
+            if volume[i] > volume[i - 1] and (closes[i] / closes[i - 1] - 1) * 100 <= -.2:
+                distribution.append(rows[i]['date'])
+    volume_reason = '' if covered_pairs == 20 else '成交量缺失或无效，无法确定完整20日放量下跌次数。'
     rebound = '延续下跌' if change < 0 else '尚无明确反弹'
     if change > 0:
         rebound = '反弹获量价确认' if close > rows[-2]['high'] and close > ma['5'] and relative is not None and relative >= 1.2 else '反弹尚待量价确认'
@@ -239,7 +242,7 @@ def technical_report(rows, source, as_of):
         flags.append('RSI处于超卖区；超卖可能延续，不能单独视为见底。')
     if rsi >= 70:
         flags.append('RSI处于超买区；强趋势中也可能维持超买。')
-    if len(distribution) >= 4:
+    if covered_pairs == 20 and len(distribution) >= 4:
         flags.append('近20个交易日多次放量下跌，反弹需观察能否收回均线。')
     if change > 0 and close < ma['20']:
         flags.append('当前收涨仍处于MA20下方，尚未完成趋势修复。')
@@ -250,7 +253,9 @@ def technical_report(rows, source, as_of):
                           'percentB': (close - lower) / (upper - lower) * 100 if upper > lower else None},
             'relativeVolume20': relative, 'atr14': atr, 'atrPct': atr / close * 100,
             'ma20Slope5Pct': slope, 'distanceMA20Pct': (close / ma['20'] - 1) * 100,
-            'trend': state, 'rebound': rebound, 'distributionDays20': len(distribution),
+            'trend': state, 'rebound': rebound, 'distributionDays20': len(distribution) if covered_pairs == 20 else None,
+            'distributionCoverage': {'status': 'complete' if covered_pairs == 20 else 'partial' if covered_pairs else 'unknown',
+                                     'available': covered_pairs, 'expected': 20, 'reason': volume_reason},
             'distributionDates': distribution, 'flags': flags, 'drawdown': drawdown_summary(rows)}
 
 
@@ -373,12 +378,21 @@ def option_scope(rows, spot):
         ratio = row['volume'] / row['oi'] if row['oi'] and row['volume'] is not None else None
         if row['volume'] is not None and row['volume'] >= 500 and (ratio is not None and ratio >= 2 or row['oi'] == 0):
             anomalies.append({**row, 'volumeOIRatio': ratio, 'reason': '成交量 / OI ≥ 2' if ratio is not None else '零OI高成交，不能计算比值'})
-    walls = list(strikes.values())
+    missing_oi = sum(row['oi'] is None for row in rows)
+    candidate_coverage = sum(row['oi'] is not None and row['volume'] is not None for row in rows)
+    # 任一OI缺失都可能改变聚合和排序；不向调用方返回局部墙或局部行权价排名。
+    walls = list(strikes.values()) if not missing_oi else []
     upper = sorted((row for row in walls if row['strike'] >= spot and row['callOI'] is not None and row['callOI'] > 0), key=lambda row: row['callOI'], reverse=True)[:3]
     lower = sorted((row for row in walls if row['strike'] <= spot and row['putOI'] is not None and row['putOI'] > 0), key=lambda row: row['putOI'], reverse=True)[:3]
     selected = sorted(walls, key=lambda row: (row['callOI'] or 0) + (row['putOI'] or 0), reverse=True)[:18]
     anomalies.sort(key=lambda row: (row['volume'], row['volumeOIRatio'] or 0), reverse=True)
-    return {'contracts': len(rows), 'missingOI': sum(row['oi'] is None for row in rows),
+    return {'contracts': len(rows), 'missingOI': missing_oi,
+            'oiCoverage': {'status': 'partial' if missing_oi else 'complete',
+                           'available': len(rows) - missing_oi, 'expected': len(rows),
+                           'reason': 'OI不完整，停止排名及分布图。' if missing_oi else ''},
+            'anomalyCoverage': {'status': 'complete' if candidate_coverage == len(rows) else 'partial',
+                                'available': candidate_coverage, 'expected': len(rows),
+                                'reason': '局部样本：仅筛选OI与成交量均已知的合约。' if candidate_coverage < len(rows) else ''},
             'missingVolume': sum(row['volume'] is None for row in rows), 'totals': totals,
             'putCallOI': totals['putOi'] / totals['callOi'] if totals['putOi'] is not None and totals['callOi'] else None,
             'putCallVolume': totals['putVolume'] / totals['callVolume'] if totals['putVolume'] is not None and totals['callVolume'] else None,
@@ -386,18 +400,45 @@ def option_scope(rows, spot):
             'anomalyCount': len(anomalies), 'anomalies': anomalies[:20]}
 
 
-def options_report(symbol, market, requested_date, horizon=30):
+def option_snapshot_quality(timestamp, now):
+    """以带时区的报价时间判定质量；保守限制当日60分钟，不推断OI日期或休市日。"""
+    policy = '仅美东当日且滞后不超过60分钟的带时区报价快照可用；不代表OI有效时间。'
+    result = {'status': 'missing_timestamp', 'reason': '期权快照时间缺失，未展示。',
+              'policy': policy, 'maxAgeSeconds': 3600, 'ageSeconds': None}
+    if not timestamp:
+        return result
+    try:
+        stamp = datetime.fromisoformat(str(timestamp).replace('Z', '+00:00'))
+    except ValueError:
+        return {**result, 'status': 'invalid_timestamp', 'reason': '期权快照时间格式无效，未展示。'}
+    if stamp.tzinfo is None or stamp.utcoffset() is None:
+        return {**result, 'status': 'timezone_unknown', 'reason': '期权快照未提供明确时区，无法核验时效，未展示。'}
+    age = (now - stamp).total_seconds()
+    if age < 0:
+        return {**result, 'status': 'future_timestamp', 'reason': '期权快照时间超前，未展示。', 'ageSeconds': age}
+    stale = stamp.astimezone(NY).date() != now.astimezone(NY).date() or age > 3600
+    return {**result, 'status': 'stale' if stale else 'available', 'ageSeconds': age,
+            'reason': '报价快照滞后；不作为当前墙或异动信号。' if stale else ''}
+
+
+def options_report(symbol, market, requested_date, horizon=30, now=None):
     """读取免费延时期权链，历史视图不冒用当前OI，所有范围均明确显示。"""
-    today = datetime.now(NY).date().isoformat()
+    now = now or datetime.now(NY)
+    today = now.astimezone(NY).date().isoformat()
     if market != 'US':
         return unavailable('目前仅接入美股 / ETF 的Cboe公开延时期权链。')
-    if requested_date and requested_date < today:
-        return unavailable('历史期权链未接入；不会用今天的OI替代所选历史日期。', CBOE_URL)
+    if requested_date and requested_date != today:
+        reason = ('历史期权链未接入；不会用今天的OI替代所选历史日期。' if requested_date < today else
+                  '所选期权日期超前，未使用当前链替代未来日期。')
+        return {**unavailable(reason, CBOE_URL), 'oiAsOf': None,
+                'snapshotQuality': {'status': 'historical_unavailable' if requested_date < today else 'future_request', 'reason': reason}}
     try:
         url = CBOE_URL + symbol + '.json'
         chain = cached(('cboe-options', symbol), 600, lambda: parse_options(read_public(url, True), symbol))
-        if not chain.get('providerTimestamp') or str(chain['providerTimestamp'])[:10] > today:
-            raise RuntimeError('期权快照日期缺失或超前，未展示。')
+        quality = option_snapshot_quality(chain.get('providerTimestamp'), now)
+        if quality['status'] not in {'available', 'stale'}:
+            return {**unavailable(quality['reason'], url), 'snapshotQuality': quality,
+                    'providerTimestamp': chain.get('providerTimestamp'), 'oiAsOf': None}
         end = (datetime.fromisoformat(today).date() + timedelta(days=horizon)).isoformat()
         rows = [row for row in chain['rows'] if today <= row['expiry'] <= end]
         if not rows:
@@ -406,16 +447,16 @@ def options_report(symbol, market, requested_date, horizon=30):
         scopes = {'all': option_scope(rows, chain['spot'])}
         for expiry in expiries:
             scopes[expiry] = option_scope([row for row in rows if row['expiry'] == expiry], chain['spot'])
-        stamp = str(chain['providerTimestamp'])[:10]
-        stale = (datetime.fromisoformat(today).date() - datetime.fromisoformat(stamp).date()).days > 3
-        return {'status': 'stale' if stale else 'available', 'source': 'Cboe · 延时报价', 'url': url,
-                'providerTimestamp': chain['providerTimestamp'], 'capturedAt': datetime.now(timezone.utc).isoformat(),
+        return {'status': quality['status'], 'reason': quality['reason'], 'snapshotQuality': quality,
+                'source': 'Cboe · 延时报价', 'url': url, 'oiAsOf': None,
+                'providerTimestamp': chain['providerTimestamp'], 'capturedAt': now.astimezone(timezone.utc).isoformat(),
                 'underlyingLastTradeTime': chain['underlyingLastTradeTime'], 'spot': chain['spot'],
                 'horizonDays': horizon, 'start': today, 'end': end, 'expiries': expiries, 'scopes': scopes,
                 'skippedContracts': chain['skippedContracts'],
                 'limits': ['OI是最近公布的存量，接口未提供独立的OI有效日期，不能解释为盘中增仓。',
                            'P/C是合约成交或持仓比，不是实际多空资金、开仓方向或获胜比例。',
-                           '期权墙按参考价上下20%内的已知OI聚合；Call/Put集中不保证形成阻力/支撑，未计算做市商净GEX。',
+                           quality['policy'],
+                           '所选范围OI完整时才给出上下20%集中价排名；Call/Put集中不保证形成阻力/支撑，未计算做市商净GEX。',
                            '异动仅按成交量≥500且成交量/OI≥2筛选，按成交量排序；零OI单列，极小OI会放大比值，不认定为机构买入、扫单或买Call看多。']}
     except (RuntimeError, ValueError, KeyError) as error:
         return unavailable(str(error), CBOE_URL)

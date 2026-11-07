@@ -553,7 +553,7 @@ def collect_symbol_minutes(context, market, symbol):
     return archive_flow(context, market, symbol, flow.to_dict('records')) if not flow.empty else []
 
 
-def fetch_research(symbol, as_of, lookback, span, percentile, minimum, days, kind, direction, market):
+def fetch_research(symbol, as_of, lookback, span, percentile, minimum, days, kind, direction, market, mode='retrospective'):
     """读取真实日级与留存尾盘，汇总资金事件、近5日提醒和后续X日表现。"""
     with LOCK:
         context = get_context()
@@ -572,10 +572,10 @@ def fetch_research(symbol, as_of, lookback, span, percentile, minimum, days, kin
             minute_error = str(error)
         job_progress(2, 3, '计算资金事件与后续走势')
         result = research.build_research(record, calendar, market, symbol, as_of, lookback, span,
-                                         percentile, minimum, days, kind, direction)
+                                         percentile, minimum, days, kind, direction, mode)
         result.update(market_metadata(market))
         result['minuteError'] = minute_error
-        result['serviceVersion'] = 2
+        result['serviceVersion'] = 3
         return result
 
 
@@ -812,13 +812,17 @@ class Handler(SimpleHTTPRequestHandler):
                     return
             try:
                 if parsed.path == '/api/research':
+                    modes = parse_qs(parsed.query, keep_blank_values=True).get('mode', ['retrospective'])
+                    if len(modes) != 1 or modes[0] not in {'retrospective', 'strict-as-of'}:
+                        raise ValueError('研究mode必须唯一且为retrospective或strict-as-of。')
+                    mode = modes[0]
                     symbol = normalize_symbol(query.get('symbol', [''])[0], market)
                     days, lookback, span = (int(query.get(name, [str(default)])[0]) for name, default in [('days', 20), ('lookback', 120), ('span', 1)])
                     percentile, minimum = float(query.get('percentile', ['90'])[0]), float(query.get('minimum', ['0'])[0])
                     kind, direction = query.get('kind', ['daily'])[0], query.get('direction', ['out'])[0]
                     if not (1 <= days <= 120 and 20 <= lookback <= 250 and 1 <= span <= 10 and 50 <= percentile <= 99 and math.isfinite(minimum) and 0 <= minimum <= 1e12 and kind in {'daily', 'tail10', 'tail20'} and direction in {'in', 'out', 'both'}):
                         raise ValueError('研究参数无效，请检查交易日数和阈值。')
-                    function, args = fetch_research, (symbol, selected_date, lookback, span, percentile, minimum, days, kind, direction, market)
+                    function, args = fetch_research, (symbol, selected_date, lookback, span, percentile, minimum, days, kind, direction, market, mode)
                 elif parsed.path in {'/api/path', '/api/main-window'}:
                     symbol = normalize_symbol(query.get('symbol', [''])[0], market)
                     days = int(query.get('days', ['20'])[0])

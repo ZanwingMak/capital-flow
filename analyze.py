@@ -184,9 +184,35 @@ def analyze(records, failures, start, end, requested):
                                   '日级流入流出是提供方成交分类，没有确认机构身份']}}
 
 
+def load_symbols(path):
+    """只解析usUniverse声明后的一个JSON数组，校验结构并按首次出现去重。"""
+    try:
+        source = path.read_text(encoding='utf-8')
+        declarations = list(re.finditer(r'^\s*const\s+usUniverse\s*=\s*', source, re.MULTILINE))
+        if len(declarations) != 1:
+            raise ValueError('需要唯一的const usUniverse声明')
+        start = declarations[0].end()
+        rows, end = json.JSONDecoder().raw_decode(source, start)
+        if not source[end:].lstrip().startswith(';'):
+            raise ValueError('JSON数组后必须以分号结束，不支持表达式')
+        if not isinstance(rows, list) or not rows:
+            raise ValueError('观察池必须为非空JSON数组')
+        for row in rows:
+            if (not isinstance(row, list) or len(row) != 3 or
+                    not all(isinstance(value, str) and value.strip() for value in row) or
+                    not re.fullmatch(r'[A-Z][A-Z0-9.-]{0,14}', row[0]) or row[2] not in {'stock', 'etf'}):
+                raise ValueError('每项必须为[有效美股代码, 非空名称, stock或etf]')
+        symbols = list(dict.fromkeys(row[0] for row in rows))
+        if 'SPY' not in symbols:
+            raise ValueError('观察池缺少SPY基准')
+        return symbols
+    except (OSError, ValueError) as error:
+        raise RuntimeError('usUniverse解析失败：' + str(error) + '；未采集或覆盖validation.json。') from None
+
+
 def main():
     """采集并复核数据，输出可重复计算的本地结果。"""
-    symbols = re.findall(r"^\['([A-Z][A-Z0-9.-]*)'", (ROOT / 'dist/app.js').read_text(), re.MULTILINE)
+    symbols = load_symbols(ROOT / 'dist/app.js')
     today = datetime.now(ZoneInfo('America/New_York')).date()
     start, end = (today - timedelta(days=365)).isoformat(), (today - timedelta(days=1)).isoformat()
     records, failures = collect(symbols, start, end)
