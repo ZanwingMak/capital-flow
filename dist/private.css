@@ -1,0 +1,29 @@
+/* 私有工作台延续现有深色配色；全部样式限制在独立对话框内。 */
+#private-dialog{width:min(1180px,96vw);max-height:92dvh;padding:28px;overflow:auto}
+#private-dialog [hidden]{display:none!important}
+#private-dialog h3{margin:0 0 16px;font-size:18px}
+#private-dialog h4{margin:18px 0 10px}
+#private-dialog p{line-height:1.65;color:var(--muted,#a4afc0)}
+#private-dialog label{display:grid;gap:7px;font-size:13px;align-content:start}
+#private-dialog input,#private-dialog select,#private-dialog textarea{width:100%;box-sizing:border-box;background:#151d2a;border:1px solid #344052;border-radius:6px;padding:10px;color:inherit;font:inherit}
+#private-dialog input[type=checkbox]{width:18px;height:18px;accent-color:#4cbf9a}
+#private-dialog input:focus-visible,#private-dialog select:focus-visible,#private-dialog textarea:focus-visible,#private-dialog button:focus-visible{outline:2px solid #4cbf9a;outline-offset:3px}
+#private-dialog .private-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+#private-dialog .private-inline{display:flex;gap:12px;flex-wrap:wrap;align-items:end}
+#private-dialog .private-inline label{flex:1;min-width:180px}
+#private-dialog fieldset{border:0;padding:0;margin:0;min-width:0}
+#private-dialog section{border-top:1px solid #303b4a;margin-top:24px;padding-top:24px}
+#private-dialog button{min-height:40px}
+#private-dialog button:disabled{opacity:.5;cursor:wait}
+#private-status{padding:12px 16px;background:#1a2530;border-left:3px solid #4cbf9a;white-space:pre-wrap}
+#private-dialog .private-meta{font-variant-numeric:tabular-nums;color:#e4eaf0}
+#private-dialog .private-table{overflow:auto;margin:16px 0}
+#private-dialog table{width:100%;border-collapse:collapse;text-align:left}
+#private-dialog td,#private-dialog th{padding:12px;border-bottom:1px solid #303b4a;vertical-align:top;white-space:normal}
+#private-dialog td label{margin-top:10px;min-width:140px}
+#private-dialog pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto;font-size:12px;background:#151d2a;padding:12px}
+#private-dialog .private-totals{display:grid;grid-template-columns:minmax(160px,1fr) 1fr;gap:8px;margin:16px 0}
+#private-dialog dd{margin:0;font-variant-numeric:tabular-nums}
+#private-dialog summary{cursor:pointer;line-height:1.8}
+#private-dialog .private-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}
+@media(max-width:700px){#private-dialog{padding:18px}.private-grid,#private-dialog .private-grid{grid-template-columns:1fr}#private-dialog .private-totals{grid-template-columns:1fr}#private-dialog dd{margin-bottom:8px}}

@@ -21,6 +21,8 @@
 | 小单与筹码观察 | 展示真实订单规模分类；没有券商成本分布时明确不可用，不从成交分类推断真实持仓成本。 |
 | 美股期权观察 | 延时期权链、P/C、OI 集中与异动候选；检查覆盖及快照质量，数据不足时降级或停止展示。 |
 | Alpaca 尾盘验证 | 使用有权限的 SIP 历史成交与报价估算尾盘大额买卖压力，与富途资金流分开观察。 |
+| 私有台账与CSV导入 | 本机主动开启的USD正股账本、带日期期初、含费买卖与现金流；Schwab CSV逐行预览、重复确认及版本保护。 |
+| 事件证据与私有研究 | 人工录入新闻/财报/宏观/政策，冻结持仓与支持/反面证据版本，私有JSON/Markdown导出与只读CLI。 |
 | 历史有效性验证 | 提供资金与后续收益的描述性检验、日期区块重采样和时间切分；不把历史统计包装成稳定预测胜率。 |
 
 ## 快速开始
@@ -86,7 +88,7 @@ python3 -m venv .venv
 - **缺失、真实零值和陈旧数据分开显示**。缺量不写成零次放量下跌；OI 不完整时停止完整排名；陈旧或无法核验的期权快照不作为当前信号。
 - **历史事件统计是描述性观察**。重叠事件、交易成本、选择偏差和数据修订都会影响结论；期权集中价也不保证形成支撑或阻力。
 
-个人持仓管理、新闻 / 官方数据 / 财报整合及定时研究服务属于后续扩展或仓库外集成，不应误认为当前网页已经内置全部能力。
+本机现已提供私有USD正股台账、人工事件证据与冻结研究记录，见[私有工作台指南](docs/private-workspace.md)。未知成本保持null，不提供实时账户权益、期权/卖空/洗售/多币种税务；新闻、官方数据、财报自动抓取核验及Hermes定时报告桥接仍由后续仓库外集成完成。
 
 ## 项目结构
 
@@ -100,6 +102,8 @@ python3 -m venv .venv
 | `intelligence.py` | 技术、市场环境、情绪及期权观察。 |
 | `alpaca_data.py` | Alpaca 历史成交 / 报价与尾盘压力估算。 |
 | `chips.py` | 订单规模与小单观察。 |
+| `portfolio_store.py`、`portfolio_ledger.py`、`portfolio_import.py` | 仓库外SQLite事件台账、Decimal重放与CSV冻结预览。 |
+| `private_api.py`、`research_store.py`、`research_report.py`、`private_cli.py` | 本机同源保护、人工证据与研究冻结、只读私有报告导出。 |
 | `tests/` | Python 和 Node 回归测试。 |
 | `docs/` | 启动指南及分节点调整、验收记录。 |
 
@@ -109,12 +113,12 @@ python3 -m venv .venv
 
 ```bash
 .venv/bin/python -m unittest discover -s tests -v
-node --test tests/test_intelligence_ui.js tests/test_research_ui.js
+node --test tests/test_*.js
 bash -n 启动Flowdesk.command
 git diff --check
 ```
 
-测试使用离线合成数据验证边界；不等于已验证全部真实行情权限、全天连续运行或所有平台。
+私有模块测试固定使用 `~/.hermes/cache/scratch/flowdesk-review/portfolio-tests` 下的隔离合成目录；临时SQLite不写入项目或生产目录。测试使用离线合成数据验证边界；不等于已验证全部真实行情权限、全天连续运行或所有平台。
 
 ## 文档与调整记录
 
@@ -126,3 +130,9 @@ git diff --check
 - [节点4：真实服务与网页验收](docs/changes/04-live-acceptance.md)
 - [节点5：一键启动及验证](docs/changes/05-one-click-startup.md)
 - [节点6：项目首页与启动指南整理](docs/changes/06-project-documentation.md)
+
+- [私有工作台与父代理验收指南](docs/private-workspace.md)
+- [节点7：私有台账](docs/changes/07-private-ledger.md)
+- [节点8：受保护本机工作台](docs/changes/08-private-workspace.md)
+- [节点9：事件证据与冻结研究](docs/changes/09-evidence-and-research.md)
+- [节点10：私有工作台真实运行验收与范围](docs/changes/10-private-live-acceptance.md)

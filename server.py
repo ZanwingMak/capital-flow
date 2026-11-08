@@ -20,8 +20,10 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 from zoneinfo import ZoneInfo
 from launch import APP_ID, project_id
+from private_api import PrivateAPI
 
 ROOT = Path(__file__).resolve().parent / 'dist'
+PRIVATE_API = PrivateAPI()
 HOST = os.getenv('FLOW_HOST', '127.0.0.1')
 PORT = int(os.getenv('FLOW_PORT', '8788'))
 OPEND_HOST = os.getenv('FUTU_HOST', '127.0.0.1')
@@ -670,7 +672,7 @@ class Handler(SimpleHTTPRequestHandler):
     def end_headers(self):
         """为白名单来源添加跨域响应，同时关闭 API 和页面缓存。"""
         origin = self.headers.get('Origin', '')
-        if origin in ALLOWED_ORIGINS:
+        if not urlsplit(self.path).path.startswith('/api/private') and origin in ALLOWED_ORIGINS:
             self.send_header('Access-Control-Allow-Origin', origin)
             self.send_header('Vary', 'Origin')
         self.send_header('Cache-Control', 'no-store')
@@ -688,6 +690,8 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_OPTIONS(self):
         """仅允许已配置的网站来源进行 GET 预检。"""
+        if PRIVATE_API.handle(self, 'OPTIONS', TOKEN):
+            return
         if self.headers.get('Origin') not in ALLOWED_ORIGINS:
             self.respond(403, {'error': '此网站来源未授权。'})
             return
@@ -698,6 +702,8 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         """校验请求后获取资金流；静态请求只允许访问已知页面资产。"""
+        if PRIVATE_API.handle(self, 'GET', TOKEN):
+            return
         parsed = urlsplit(self.path)
         if parsed.path in {'/api/snapshot', '/api/validation', '/api/path', '/api/main-window', '/api/research', '/api/jobs', '/api/health', '/api/alpaca-status', '/api/alpaca-tail', '/api/chips', '/api/intelligence', '/api/stock-intelligence'}:
             origin = self.headers.get('Origin', '')
@@ -842,7 +848,7 @@ class Handler(SimpleHTTPRequestHandler):
             except RuntimeError as error:
                 self.respond(503, {'error': str(error)})
             return
-        if parsed.path not in {'/', '/index.html', '/guide.html', '/windows-package.zip', '/styles.css', '/app.js', '/research.js', '/alpaca.js', '/chips.js', '/intelligence.js', '/intelligence.css', '/data/aaii-survey.json', '/favicon.ico'}:
+        if parsed.path not in {'/', '/index.html', '/guide.html', '/windows-package.zip', '/styles.css', '/app.js', '/research.js', '/alpaca.js', '/chips.js', '/intelligence.js', '/intelligence.css', '/private.js', '/private-research.js', '/private.css', '/data/aaii-survey.json', '/favicon.ico'}:
             self.respond(404, {'error': '页面不存在。'})
             return
         if parsed.path == '/favicon.ico':
@@ -850,6 +856,16 @@ class Handler(SimpleHTTPRequestHandler):
             self.end_headers()
             return
         super().do_GET()
+
+    def do_POST(self):
+        """私有API专用POST入口，不触发行情任务或开放CORS。"""
+        if not PRIVATE_API.handle(self, 'POST', TOKEN):
+            self.respond(404, {'error': '接口不存在。'})
+
+    def do_HEAD(self):
+        """私有前缀也受边界控制，静态HEAD沿用页面服务。"""
+        if not PRIVATE_API.handle(self, 'HEAD', TOKEN):
+            super().do_HEAD()
 
     def log_message(self, format_string, *args):
         """保持控制台简洁，不记录可能包含敏感信息的请求参数。"""
