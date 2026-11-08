@@ -1,0 +1,4 @@
+Date,Action,Symbol,Description,Quantity,Price,Fees & Comm,Amount
+01/02/2026,Buy,TEST,SYNTHETIC ONLY - USD equity,2,10,0.20,-20.20
+01/03/2026,Sell,TEST,SYNTHETIC ONLY - USD equity,1,12,0.10,11.90
+01/04/2026,Cash Dividend,TEST,SYNTHETIC ONLY - USD equity,,,,0.50
