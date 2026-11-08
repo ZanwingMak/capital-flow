@@ -19,6 +19,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 from zoneinfo import ZoneInfo
+from launch import APP_ID, project_id
 
 ROOT = Path(__file__).resolve().parent / 'dist'
 HOST = os.getenv('FLOW_HOST', '127.0.0.1')
@@ -717,7 +718,8 @@ class Handler(SimpleHTTPRequestHandler):
                 self.respond(status, payload)
                 return
             if parsed.path == '/api/health':
-                self.respond(200, {'serviceVersion': 4, 'source': 'futu-opend', 'features': ['jobs', 'research', 'minute-archive', 'alpaca-tail', 'chips', 'intelligence', 'stock-intelligence']})
+                self.respond(200, {'serviceVersion': 4, 'source': 'futu-opend', 'app': APP_ID,
+                    'projectId': project_id(ROOT.parent), 'features': ['jobs', 'research', 'minute-archive', 'alpaca-tail', 'chips', 'intelligence', 'stock-intelligence']})
                 return
             if parsed.path in {'/api/intelligence', '/api/stock-intelligence'}:
                 try:
