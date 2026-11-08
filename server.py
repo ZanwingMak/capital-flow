@@ -848,7 +848,7 @@ class Handler(SimpleHTTPRequestHandler):
             except RuntimeError as error:
                 self.respond(503, {'error': str(error)})
             return
-        if parsed.path not in {'/', '/index.html', '/guide.html', '/windows-package.zip', '/styles.css', '/app.js', '/research.js', '/alpaca.js', '/chips.js', '/intelligence.js', '/intelligence.css', '/private.js', '/private-research.js', '/private.css', '/data/aaii-survey.json', '/favicon.ico'}:
+        if parsed.path not in {'/', '/index.html', '/guide.html', '/windows-package.zip', '/styles.css', '/app.js', '/research.js', '/alpaca.js', '/chips.js', '/intelligence.js', '/intelligence.css', '/private.js', '/private-research.js', '/stress-lab.js', '/private.css', '/data/aaii-survey.json', '/favicon.ico'}:
             self.respond(404, {'error': '页面不存在。'})
             return
         if parsed.path == '/favicon.ico':

@@ -122,8 +122,13 @@
     /** 读取当前账户最新版本并使旧预览失效。 */
     async function refresh() {
       invalidate();
-      if (!account) {snapshot=null;el('private-snapshot').textContent='先创建或选择账户。';await researchUI.refresh();return;}
-      snapshot=await client.call('snapshot',{account});
+      snapshot=null;stressUI.clear();
+      if (!account) {stressUI.sync();el('private-snapshot').textContent='先创建或选择账户。';await researchUI.refresh();return;}
+      const generation=workspaceGeneration,requestedAccount=account;
+      const refreshed=await client.call('snapshot',{account:requestedAccount});
+      if (generation!==workspaceGeneration || requestedAccount!==account) return;
+      snapshot=refreshed;
+      stressUI.sync();
       el('private-snapshot').innerHTML=snapshotHTML(snapshot);
       const history=await client.call('history',{account});
       el('private-history').textContent=JSON.stringify(history.events,null,2);
@@ -131,7 +136,9 @@
     }
     /** 列出账户，只有本次DOM选择持有账户ID。 */
     async function accounts(selected='') {
+      const generation=workspaceGeneration;
       const result=await client.call('accounts');
+      if (generation!==workspaceGeneration) return;
       el('private-account').innerHTML='<option value="">选择账户</option>' + result.accounts.map(a=>`<option value="${escape(a.id)}">${escape(a.name)} · v${a.revision}</option>`).join('');
       account=selected || (result.accounts.length === 1 ? result.accounts[0].id : '');
       el('private-account').value=account;
@@ -144,7 +151,14 @@
       for (const [name,kinds] of Object.entries(allowed)) el('private-event').elements[name].closest('label').hidden=!kinds.includes(kind);
     }
     const researchUI=window.FlowdeskPrivateResearch.mount({client,el,context:()=>({account,snapshot}),run,status});
-    el('open-private').addEventListener('click',()=>{dialog.showModal();status(isLocal(window.location)?'主动开启本机会话后访问私有台账。':'GitHub Pages不能读取本机私有数据，请打开本机看板。');el('private-session-button').hidden=!isLocal(window.location);});
+    // 旧测试DOM或旧缓存没有模块时仍可使用原工作台；生产页面按顺序载入模块。
+    const stressUI=window.FlowdeskStressLab?.mount({root:el('private-stress'),context:()=>({account,snapshot})}) || {
+      /** 未加载实验模块时保留既有工作台关闭流程。 */
+      clear(){},
+      /** 未加载实验模块时保留既有工作台刷新流程。 */
+      sync(){}
+    };
+    el('open-private').addEventListener('click',()=>{dialog.showModal();stressUI.sync();status(isLocal(window.location)?'主动开启本机会话后访问私有台账。':'GitHub Pages不能读取本机私有数据，请打开本机看板。');el('private-session-button').hidden=!isLocal(window.location);});
     el('private-session').addEventListener('submit',event=>{event.preventDefault();run(async()=>{
       await client.open(el('private-flow-token').value);el('private-flow-token').value='';el('private-workspace').hidden=false;
       await accounts();status('本机会话已开启，仅在当前窗口保留令牌。');
@@ -152,7 +166,11 @@
     el('private-create').addEventListener('submit',event=>{event.preventDefault();run(async()=>{
       const result=await client.call('accounts/create',{name:el('private-name').value});el('private-name').value='';await accounts(result.id);status('账户已创建。');
     });});
-    el('private-account').addEventListener('change',()=>run(async()=>{account=el('private-account').value;csv='';el('private-file').value='';el('private-preview').textContent='';await refresh();}));
+    el('private-account').addEventListener('change',()=>{
+      workspaceGeneration++;account=el('private-account').value;snapshot=null;stressUI.clear();
+      csv='';el('private-file').value='';el('private-preview').textContent='';
+      run(refresh);
+    });
     el('private-refresh').addEventListener('click',()=>run(refresh));
     el('private-event').elements.kind.addEventListener('change',fieldsForAction);
     el('private-event').addEventListener('submit',event=>{event.preventDefault();run(async()=>{
@@ -196,6 +214,7 @@
     watchDialogClosure(dialog,()=>{
       workspaceGeneration++;client.close();account='';snapshot=null;csv='';invalidate();
       researchUI.clear();
+      stressUI.clear();
       dialog.querySelectorAll('form').forEach(form=>form.reset());
       for (const id of ['private-snapshot','private-preview','private-history','private-account']) el(id).textContent='';
       el('private-workspace').hidden=true;status('私有会话已关闭。');
