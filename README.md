@@ -23,6 +23,7 @@
 | Alpaca 尾盘验证 | 使用有权限的 SIP 历史成交与报价估算尾盘大额买卖压力，与富途资金流分开观察。 |
 | 私有台账与CSV导入 | 本机主动开启的USD正股账本、带日期期初、含费买卖与现金流；Schwab CSV逐行预览、重复确认及版本保护。 |
 | 事件证据与私有研究 | 人工录入新闻/财报/宏观/政策，冻结持仓与支持/反面证据版本，私有JSON/Markdown导出与只读CLI。 |
+| [持仓压力实验室](docs/stress-lab.md) | 在本机私有弹窗主动载入持仓，手填USD参考价格与时间，比较全局/逐股假设冲击、覆盖缺口和分组美元变化；仅存内存。 |
 | 历史有效性验证 | 提供资金与后续收益的描述性检验、日期区块重采样和时间切分；不把历史统计包装成稳定预测胜率。 |
 
 ## 快速开始
@@ -136,3 +137,4 @@ git diff --check
 - [节点8：受保护本机工作台](docs/changes/08-private-workspace.md)
 - [节点9：事件证据与冻结研究](docs/changes/09-evidence-and-research.md)
 - [节点10：私有工作台真实运行验收与范围](docs/changes/10-private-live-acceptance.md)
+- [节点11：持仓压力实验室](docs/changes/11-portfolio-stress-lab.md)
