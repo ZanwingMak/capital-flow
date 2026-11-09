@@ -2,9 +2,11 @@
   "requiredStatic": [
     "index.html", "guide.html", "styles.css", "app.js", "research.js", "alpaca.js", "chips.js",
     "intelligence.js", "intelligence.css", "private.js", "private-research.js", "stress-lab.js",
-    "private.css", "workspace-nav.js", "data/aaii-survey.json", "indicators.js", "indicators.css"
+    "private.css", "workspace-nav.js", "data/aaii-survey.json", "indicators.js", "indicators.css",
+    "favicon.ico", "brand/flowdesk.svg", "brand/flowdesk-32.png",
+    "brand/flowdesk-192.png", "brand/flowdesk-512.png", "brand/flowdesk-1024.png"
   ],
-  "optionalStatic": ["favicon.ico"],
+  "optionalStatic": [],
   "applicationModules": [
     "app_paths", "server", "research", "alpaca_data", "chips", "intelligence", "launch",
     "private_api", "private_common", "portfolio_store", "portfolio_ledger", "portfolio_import",

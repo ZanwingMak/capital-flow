@@ -1,10 +1,12 @@
 # FLOWDESK
 
+<img src="dist/brand/flowdesk.svg" width="112" height="112" alt="Flowdesk 项目图标">
+
 **资金流与市场研究工作台。** 将行情、成交规模分类、历史资金事件、技术风险和期权观察放在同一个界面，帮助复核市场变化和交易判断。
 
 支持美股 / ETF、港股及沪深 A 股的行情与资金流查询；部分研究模块目前仅支持美股。项目只读取市场数据，不下单、不接管券商账户。
 
-[在线页面](https://zanwingmak.github.io/capital-flow/) · [本机启动指南](docs/local-startup.md) · [数据接入教程](https://zanwingmak.github.io/capital-flow/guide.html) · [调整记录](docs/changes/)
+[在线页面](https://zanwingmak.github.io/capital-flow/) · [桌面下载](https://github.com/ZanwingMak/capital-flow/releases) · [本机启动指南](docs/local-startup.md) · [数据接入教程](https://zanwingmak.github.io/capital-flow/guide.html) · [调整记录](docs/changes/)
 
 > GitHub Pages 托管的是静态页面，不提供公共行情后端。日常本机使用请启动项目并访问 `http://127.0.0.1:8788/`；线上页面连接真实数据需要自行部署 HTTPS 行情接口。
 
@@ -140,3 +142,4 @@ git diff --check
 - [节点9：事件证据与冻结研究](docs/changes/09-evidence-and-research.md)
 - [节点10：私有工作台真实运行验收与范围](docs/changes/10-private-live-acceptance.md)
 - [节点11：持仓压力实验室](docs/changes/11-portfolio-stress-lab.md)
+- [节点19：统一图标与桌面 Release](docs/changes/19-brand-icons-release.md)

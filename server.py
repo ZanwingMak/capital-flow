@@ -891,12 +891,8 @@ class Handler(SimpleHTTPRequestHandler):
             except RuntimeError as error:
                 self.respond(503, {'error': str(error)})
             return
-        if parsed.path not in {'/', '/index.html', '/guide.html', '/windows-package.zip', '/styles.css', '/app.js', '/research.js', '/alpaca.js', '/chips.js', '/intelligence.js', '/intelligence.css', '/private.js', '/private-research.js', '/stress-lab.js', '/workspace-nav.js', '/indicators.js', '/indicators.css', '/private.css', '/data/aaii-survey.json', '/favicon.ico'}:
+        if parsed.path not in {'/', '/index.html', '/guide.html', '/windows-package.zip', '/styles.css', '/app.js', '/research.js', '/alpaca.js', '/chips.js', '/intelligence.js', '/intelligence.css', '/private.js', '/private-research.js', '/stress-lab.js', '/workspace-nav.js', '/indicators.js', '/indicators.css', '/private.css', '/data/aaii-survey.json', '/favicon.ico', '/brand/flowdesk.svg', '/brand/flowdesk-32.png', '/brand/flowdesk-192.png', '/brand/flowdesk-512.png', '/brand/flowdesk-1024.png'}:
             self.respond(404, {'error': '页面不存在。'})
-            return
-        if parsed.path == '/favicon.ico':
-            self.send_response(204)
-            self.end_headers()
             return
         super().do_GET()
 

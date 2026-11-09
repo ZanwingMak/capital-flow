@@ -42,7 +42,30 @@ Pop-Location
 | Windows amd64 | `Flowdesk-Windows-amd64.zip`；有 NSIS 时另有 `Flowdesk-Windows-amd64-Setup.exe` |
 | 两个平台 | `SHA256SUMS.txt` |
 
-`.github/workflows/desktop.yml` 在 macOS arm64 与 Windows amd64 runner 原生构建，上传 `Flowdesk-macOS-arm64` 和 `Flowdesk-Windows-amd64` 两个 Actions artifact。工作流不会自动创建或发布 GitHub Release。macOS runner 的 `macos-15` arm64 标签依据 [GitHub 官方 runner 列表](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)。
+`.github/workflows/desktop.yml` 在 macOS arm64 与 Windows amd64 runner 原生构建，上传 `Flowdesk-macOS-arm64` 和 `Flowdesk-Windows-amd64` 两个 Actions artifact。分支 push、PR 和手动运行仅产生 Actions artifact；推送与 `desktop/mygo.json` 版本精确一致的稳定 tag（当前为 `v0.1.0`）时，两平台测试和构建全部成功后，由单一 `release` job 下载两份 artifact、逐个核对 SHA256、合并一份 `SHA256SUMS.txt`，再创建 GitHub Release。平台 job 无发布权限，不会并发改写 Release；已有同名 Release 会使创建失败，不会覆盖既有资产。macOS runner 的 `macos-15` arm64 标签依据 [GitHub 官方 runner 列表](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)。
+
+## 统一图标与发布
+
+原创图标以深蓝圆角底、三段资金柱及青绿色流线表达观察资金的变化；没有文字或细线。`dist/brand/flowdesk.svg`、1024/512/192/32 PNG、`dist/favicon.ico` 及 `desktop/icons/` 原生 ICO/ICNS 由同一几何定义生成。网页及 README 引用 SVG，兼容 favicon 引用多尺寸 ICO。静态服务返回真实图标内容，资源清单将全部图标列为必需项。
+
+重新生成时创建独立工具环境（不要改应用 venv）：
+
+```sh
+python3 -m venv "$TMPDIR/flowdesk-icon-tools"
+"$TMPDIR/flowdesk-icon-tools/bin/python" -m pip install Pillow==12.2.0
+"$TMPDIR/flowdesk-icon-tools/bin/python" scripts/generate_icons.py
+```
+
+请先把 `TMPDIR`、`PYINSTALLER_CONFIG_DIR`、`GOCACHE` 配置到自己的构建暂存目录。MyGo 的通用 `icon` 读取 1024 PNG，并将多尺寸图标嵌入 Windows EXE 和可选 NSIS 安装程序；`macos.icon` 指向生成的 ICNS，写入 `.app` 的图标与 Info.plist。ICNS 使用现代 PNG 条目，避免旧 `icp4/icp5` 条目被 IconServices 误解码。
+
+完成代码审查、合并和 CI 验证后，维护者才执行发布命令：
+
+```sh
+git tag -a v0.1.0 -m "Flowdesk v0.1.0"
+git push <remote> v0.1.0
+```
+
+后续版本需先修改 `desktop/mygo.json`，tag 必须为 `v` 加该稳定版本。tag 构建失败不会发布部分平台；修复后应使用新的版本 tag。Release 包含两平台便携包、macOS DMG、存在时的 Windows NSIS 安装程序，以及合并校验文件。`desktop/release-notes.md` 明确运行依赖与未公证/未商业签名限制。这里配置了自动化，不表示任何版本已经发布。
 
 ## 本机数据与配置
 

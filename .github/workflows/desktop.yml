@@ -3,7 +3,10 @@ name: Flowdesk desktop
 on:
   workflow_dispatch:
   push:
+    branches: ['**']
+    tags: ['v*']
     paths:
+      - 'scripts/generate_icons.py'
       - 'desktop/**'
       - 'desktop_sidecar.py'
       - 'app_paths.py'
@@ -13,11 +16,16 @@ on:
       - '.github/workflows/desktop.yml'
   pull_request:
     paths:
+      - 'scripts/generate_icons.py'
       - 'desktop/**'
       - '*.py'
       - 'dist/**'
       - 'tests/**'
       - '.github/workflows/desktop.yml'
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -44,8 +52,13 @@ jobs:
         shell: bash
         run: |
           echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "GOCACHE=$RUNNER_TEMP/go-cache" >> "$GITHUB_ENV"
           echo "PYINSTALLER_CONFIG_DIR=$RUNNER_TEMP/pyinstaller-cache" >> "$GITHUB_ENV"
       - uses: actions/checkout@v6
+      - name: Validate release tag matches application version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: python desktop/prepare_release.py --check-tag "$GITHUB_REF_NAME"
       - uses: actions/setup-go@v6
         with:
           go-version: '1.27.3'
@@ -113,3 +126,31 @@ jobs:
           name: Flowdesk-${{ matrix.target }}-diagnostics
           path: desktop/.build/pyinstaller/flowdesk-server/warn-flowdesk-server.txt
           if-no-files-found: ignore
+
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: native
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+      - name: Download both verified native bundles
+        uses: actions/download-artifact@v4
+        with:
+          pattern: Flowdesk-*
+          path: release-input
+          merge-multiple: false
+      - name: Verify platform checksums and assemble a single release
+        run: python desktop/prepare_release.py --check-tag "$GITHUB_REF_NAME" --artifacts release-input --output release-output
+      - name: Publish release after both native jobs succeed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "$GITHUB_REF_NAME" release-output/*
+          --verify-tag --title "Flowdesk $GITHUB_REF_NAME"
+          --notes-file desktop/release-notes.md --generate-notes --latest

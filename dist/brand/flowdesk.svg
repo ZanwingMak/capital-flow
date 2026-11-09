@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title">
+  <title id="title">Flowdesk — capital in motion</title>
+  <rect x="64" y="64" width="896" height="896" rx="200" fill="#101e2d"/>
+  <rect x="256" y="580" width="112" height="172" rx="28" fill="#205d68"/>
+  <rect x="456" y="460" width="112" height="292" rx="28" fill="#247e83"/>
+  <rect x="656" y="340" width="112" height="412" rx="28" fill="#2aa498"/>
+  <polyline points="256,468 456,348 568,348 768,228" fill="none" stroke="#65f0cb" stroke-width="56" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
