@@ -2,7 +2,7 @@
   "name": "Flowdesk",
   "slug": "flowdesk",
   "identifier": "com.flowdesk.desktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "icon": "../dist/brand/flowdesk-1024.png",
   "main": ".",
   "out": "build",

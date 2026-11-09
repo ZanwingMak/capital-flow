@@ -4,13 +4,24 @@ import tempfile
 import unittest
 import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType
 from unittest.mock import patch
 
 # 合成SDK占位只隔离导入副作用，采集入口在各测试中单独替换；不读写券商日志。
-with patch.dict(sys.modules, {'futu': SimpleNamespace(
-        AuType=None, KLType=None, OpenQuoteContext=None, PeriodType=None, RET_OK=0)}):
+# 只替换SDK条目；整表patch.dict回滚会移除导入期间加载的numpy等原生模块。
+_previous_futu = sys.modules.get('futu')
+_synthetic_futu = ModuleType('futu')
+for _name in ('AuType', 'KLType', 'OpenQuoteContext', 'PeriodType'):
+    setattr(_synthetic_futu, _name, None)
+setattr(_synthetic_futu, 'RET_OK', 0)
+sys.modules['futu'] = _synthetic_futu
+try:
     import analyze
+finally:
+    if _previous_futu is None:
+        sys.modules.pop('futu', None)
+    else:
+        sys.modules['futu'] = _previous_futu
 
 
 class UniverseTests(unittest.TestCase):

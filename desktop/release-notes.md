@@ -1,3 +1,5 @@
+v0.1.1 修复历史资金缓存命中后仍逐只限频等待的问题。12只股票、同一历史日期及现有磁盘缓存的冷进程实测由12.51秒降至0.66秒；首次无缓存和实时上游查询仍遵守富途限频，不能承诺同等速度。
+
 Flowdesk 桌面客户端内置 Python 运行时，无需另装 Python、Go 或 Node。统一资金流图标用于项目、网页及原生应用。
 
 - **macOS Apple Silicon**：下载 `Flowdesk-macOS-arm64.dmg` 或 ZIP。最低 macOS 12；仅 ad-hoc 完整性签名，未使用 Developer ID，未经过 Apple 公证。

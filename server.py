@@ -346,20 +346,20 @@ def fetch_snapshot(symbols, selected_date='', market='US'):
                                   low=finite(historical_quote.get('low')), high=finite(historical_quote.get('high')),
                                   quoteTime=selected_date + ' · 前复权日K线')
             if quote is not None or selected_date:
-                interval = 1.05 - (time.monotonic() - LAST_FLOW_REQUEST)
-                if interval > 0:
-                    time.sleep(interval)
-                LAST_FLOW_REQUEST = time.monotonic()
-                if selected_date:
-                    start = max(history_bounds(market)[0], (datetime.fromisoformat(selected_date) - timedelta(days=35)).date().isoformat())
-                    flow = cached_daily_flow(symbol, selected_date, market)
-                    if flow is None:
+                flow = cached_daily_flow(symbol, selected_date, market) if selected_date else None
+                flow_ret = RET_OK
+                if flow is None:
+                    # 只有实际资金流请求占用限频间隔，历史缓存命中不改变上次请求时间。
+                    interval = 1.05 - (time.monotonic() - LAST_FLOW_REQUEST)
+                    if interval > 0:
+                        time.sleep(interval)
+                    LAST_FLOW_REQUEST = time.monotonic()
+                    if selected_date:
+                        start = max(history_bounds(market)[0], (datetime.fromisoformat(selected_date) - timedelta(days=35)).date().isoformat())
                         flow_ret, flow = provider_call(from_context.get_capital_flow, quote_code(symbol, market), period_type=PeriodType.DAY,
                                                       start=start, end=selected_date)
                     else:
-                        flow_ret = RET_OK
-                else:
-                    flow_ret, flow = provider_call(from_context.get_capital_flow, quote_code(symbol, market), period_type=PeriodType.INTRADAY)
+                        flow_ret, flow = provider_call(from_context.get_capital_flow, quote_code(symbol, market), period_type=PeriodType.INTRADAY)
                 if flow_ret == RET_OK and not flow.empty:
                     flow = flow.sort_values('capital_flow_item_time')
                     if not selected_date:
