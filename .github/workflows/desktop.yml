@@ -39,8 +39,12 @@ jobs:
     env:
       GOTOOLCHAIN: go1.27.3
       PYTHONDONTWRITEBYTECODE: '1'
-      TMPDIR: ${{ runner.temp }}
     steps:
+      - name: Configure scratch directories
+        shell: bash
+        run: |
+          echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "PYINSTALLER_CONFIG_DIR=$RUNNER_TEMP/pyinstaller-cache" >> "$GITHUB_ENV"
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
