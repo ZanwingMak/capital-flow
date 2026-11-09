@@ -3,9 +3,10 @@
   "slug": "flowdesk",
   "identifier": "com.flowdesk.desktop",
   "version": "0.1.0",
+  "icon": "../dist/brand/flowdesk-1024.png",
   "main": ".",
   "out": "build",
   "resources": ["staging/sidecar"],
   "resourcesExclude": ["**/.env", "**/.env.*", "**/.data/**", "**/*.sqlite*", "**/*.db", "**/accounts/**"],
-  "macos": {"minimumSystemVersion": "12.0", "signingIdentity": "-"}
+  "macos": {"icon": "icons/flowdesk.icns", "minimumSystemVersion": "12.0", "signingIdentity": "-"}
 }
