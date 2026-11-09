@@ -1,0 +1,111 @@
+name: Flowdesk desktop
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'desktop/**'
+      - 'desktop_sidecar.py'
+      - 'app_paths.py'
+      - '*.py'
+      - 'dist/**'
+      - 'tests/**'
+      - '.github/workflows/desktop.yml'
+  pull_request:
+    paths:
+      - 'desktop/**'
+      - '*.py'
+      - 'dist/**'
+      - 'tests/**'
+      - '.github/workflows/desktop.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: macOS-arm64
+            machine: arm64
+          - runner: windows-2025
+            target: Windows-amd64
+            machine: amd64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    env:
+      GOTOOLCHAIN: go1.27.3
+      PYTHONDONTWRITEBYTECODE: '1'
+      TMPDIR: ${{ runner.temp }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.3'
+          cache-dependency-path: desktop/go.sum
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+          architecture: ${{ runner.os == 'Windows' && 'x64' || 'arm64' }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - name: Verify native architecture
+        shell: bash
+        run: python -c "import platform; assert platform.machine().lower() == '${{ matrix.machine }}', platform.machine()"
+      - name: Create isolated build environment
+        shell: bash
+        run: |
+          python -m venv desktop/.build/venv
+          if [ "$RUNNER_OS" = Windows ]; then
+            echo "BUILD_PYTHON=$GITHUB_WORKSPACE/desktop/.build/venv/Scripts/python.exe" >> "$GITHUB_ENV"
+          else
+            echo "BUILD_PYTHON=$GITHUB_WORKSPACE/desktop/.build/venv/bin/python" >> "$GITHUB_ENV"
+          fi
+      - name: Install pinned native runtime dependencies
+        shell: bash
+        run: '"$BUILD_PYTHON" -m pip install -r desktop/requirements-build.txt'
+      - name: Native Go lifecycle tests
+        working-directory: desktop
+        shell: bash
+        run: |
+          go mod download
+          go test ./...
+          go vet ./...
+      - name: Full Python regression tests on macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: '"$BUILD_PYTHON" -B -m unittest discover -s tests -p "test_*.py"'
+      - name: Desktop Python tests on Windows
+        if: runner.os == 'Windows'
+        shell: bash
+        run: '"$BUILD_PYTHON" -B -m unittest discover -s tests -p test_desktop.py'
+      - name: Frontend regression tests
+        shell: bash
+        run: |
+          npm install --prefix desktop/.build/node-tests --no-save --no-package-lock jsdom@27.0.1
+          NODE_PATH="$GITHUB_WORKSPACE/desktop/.build/node-tests/node_modules" node --test tests/*.js
+      - name: Build runtime and MyGo application; test actual binaries and extracted bundle
+        shell: bash
+        run: '"$BUILD_PYTHON" -B desktop/build.py'
+      - name: Upload complete native bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: Flowdesk-${{ matrix.target }}
+          path: |
+            desktop/release/Flowdesk-${{ matrix.target }}.zip
+            desktop/release/Flowdesk-${{ matrix.target }}.dmg
+            desktop/release/Flowdesk-${{ matrix.target }}-Setup.exe
+            desktop/release/SHA256SUMS.txt
+          if-no-files-found: error
+          compression-level: 0
+      - name: Upload build diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Flowdesk-${{ matrix.target }}-diagnostics
+          path: desktop/.build/pyinstaller/flowdesk-server/warn-flowdesk-server.txt
+          if-no-files-found: ignore

@@ -1,0 +1,6 @@
+.build/
+staging/
+build/
+release/
+local.dev.mod
+local.dev.sum

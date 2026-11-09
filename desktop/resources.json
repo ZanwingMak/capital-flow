@@ -1,0 +1,14 @@
+{
+  "requiredStatic": [
+    "index.html", "guide.html", "styles.css", "app.js", "research.js", "alpaca.js", "chips.js",
+    "intelligence.js", "intelligence.css", "private.js", "private-research.js", "stress-lab.js",
+    "private.css", "workspace-nav.js", "data/aaii-survey.json", "indicators.js", "indicators.css"
+  ],
+  "optionalStatic": ["favicon.ico"],
+  "applicationModules": [
+    "app_paths", "server", "research", "alpaca_data", "chips", "intelligence", "launch",
+    "private_api", "private_common", "portfolio_store", "portfolio_ledger", "portfolio_import",
+    "research_store", "research_report", "indicator_specs", "indicator_engine",
+    "indicator_backtest", "indicator_service"
+  ]
+}

@@ -4,6 +4,7 @@ import math
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
+from app_paths import data_dir
 
 
 def finite(value):
@@ -37,7 +38,7 @@ def fetch(context, call, root, symbol, code, market, zone, date=''):
     date = date or now.date().isoformat()
     if datetime.strptime(date, '%Y-%m-%d').date().isoformat() != date or date > now.date().isoformat():
         raise ValueError('请选择有效日期，不能查询未来日期。')
-    folder = Path(root) / '.data' / 'chips' / market / symbol / date
+    folder = data_dir(root) / 'chips' / market / symbol / date
     path = folder / 'latest.json'
     if date != now.date().isoformat():
         if not path.exists():

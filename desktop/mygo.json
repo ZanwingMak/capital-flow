@@ -1,0 +1,11 @@
+{
+  "name": "Flowdesk",
+  "slug": "flowdesk",
+  "identifier": "com.flowdesk.desktop",
+  "version": "0.1.0",
+  "main": ".",
+  "out": "build",
+  "resources": ["staging/sidecar"],
+  "resourcesExclude": ["**/.env", "**/.env.*", "**/.data/**", "**/*.sqlite*", "**/*.db", "**/accounts/**"],
+  "macos": {"minimumSystemVersion": "12.0", "signingIdentity": "-"}
+}
