@@ -11,6 +11,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
+from app_paths import config_dir, data_dir
 
 ROOT = Path(__file__).resolve().parent
 NY = ZoneInfo('America/New_York')
@@ -22,7 +23,7 @@ def credentials():
     """每次查询读取本机配置，只接受两个行情密钥字段且不输出其内容。"""
     values = {}
     try:
-        for line in (ROOT / '.env').read_text(encoding='utf-8').splitlines():
+        for line in (config_dir() / '.env').read_text(encoding='utf-8').splitlines():
             key, separator, value = line.strip().partition('=')
             if separator and key in {'APCA_API_KEY_ID', 'APCA_API_SECRET_KEY'}:
                 values[key] = value.strip().strip('"\'')
@@ -223,7 +224,7 @@ def fetch_tail(symbol, date, days, threshold, progress):
         raise ValueError('所选日期不是 Alpaca 日历中的已结束交易日。')
     close = datetime.fromisoformat(date + 'T' + calendar[0]['close']).replace(tzinfo=NY)
     start = close - timedelta(minutes=20)
-    path = ROOT / '.data' / 'alpaca' / symbol / (date + '-v1.json.gz')
+    path = data_dir() / 'alpaca' / symbol / (date + '-v1.json.gz')
     try:
         with gzip.open(path, 'rt', encoding='utf-8') as file:
             cached = json.load(file)

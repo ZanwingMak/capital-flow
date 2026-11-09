@@ -1,40 +1,103 @@
-/* 私有工作台延续现有深色配色；全部样式限制在独立对话框内。 */
-#private-dialog{width:min(1180px,96vw);max-height:92dvh;padding:28px;overflow:auto}
+/* 私有工作台：固定账户与任务导航，只有当前任务内容滚动。 */
+#private-dialog{width:min(1180px,calc(100vw - 32px));max-width:calc(100vw - 32px);max-height:92dvh;padding:24px;overflow:hidden;background:var(--surface)}
+#private-dialog[open]{display:flex;flex-direction:column;gap:0}
+#private-dialog[data-workspace-session=active]{height:min(880px,92dvh)}
 #private-dialog [hidden]{display:none!important}
-#private-dialog h3{margin:0 0 16px;font-size:18px}
-#private-dialog h4{margin:18px 0 10px}
-#private-dialog p{line-height:1.65;color:var(--muted,#a4afc0)}
-#private-dialog label{display:grid;gap:7px;font-size:13px;align-content:start}
-#private-dialog input,#private-dialog select,#private-dialog textarea{width:100%;box-sizing:border-box;background:#151d2a;border:1px solid #344052;border-radius:6px;padding:10px;color:inherit;font:inherit}
-#private-dialog input[type=checkbox]{width:18px;height:18px;accent-color:#4cbf9a}
-#private-dialog input:focus-visible,#private-dialog select:focus-visible,#private-dialog textarea:focus-visible,#private-dialog button:focus-visible{outline:2px solid #4cbf9a;outline-offset:3px}
-#private-dialog .private-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
-#private-dialog .private-inline{display:flex;gap:12px;flex-wrap:wrap;align-items:end}
+#private-dialog .dialog-header{flex:none;margin:0 0 16px;gap:16px}
+#private-dialog .dialog-header h2{margin:8px 0 0}
+#private-dialog h3{margin:0 0 12px;font-size:18px;font-weight:550}
+#private-dialog h4{margin:16px 0 8px}
+#private-dialog p{line-height:1.8;color:var(--muted);overflow-wrap:anywhere}
+#private-dialog label{display:grid;gap:8px;font-size:12px;align-content:start;min-width:0}
+#private-dialog input,#private-dialog select,#private-dialog textarea{width:100%;min-width:0;min-height:44px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px 12px;color:var(--text);font:inherit;font-variant-numeric:tabular-nums}
+#private-dialog textarea{resize:vertical;line-height:1.7}
+#private-dialog input[type=checkbox]{width:20px;height:20px;min-height:0;accent-color:var(--green)}
+#private-dialog :is(input,select,textarea,button,summary,[tabindex]):focus-visible{outline:2px solid var(--green);outline-offset:3px}
+#private-dialog .private-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+#private-dialog .private-inline{display:flex;gap:12px;flex-wrap:wrap;align-items:end;min-width:0}
 #private-dialog .private-inline label{flex:1;min-width:180px}
 #private-dialog fieldset{border:0;padding:0;margin:0;min-width:0}
-#private-dialog section{border-top:1px solid #303b4a;margin-top:24px;padding-top:24px}
-#private-dialog button{min-height:40px}
-#private-dialog button:disabled{opacity:.5;cursor:wait}
-#private-status{padding:12px 16px;background:#1a2530;border-left:3px solid #4cbf9a;white-space:pre-wrap}
-#private-dialog .private-meta{font-variant-numeric:tabular-nums;color:#e4eaf0}
-#private-dialog .private-table{overflow:auto;margin:16px 0}
-#private-dialog table{width:100%;border-collapse:collapse;text-align:left}
-#private-dialog td,#private-dialog th{padding:12px;border-bottom:1px solid #303b4a;vertical-align:top;white-space:normal}
-#private-dialog td label{margin-top:10px;min-width:140px}
-#private-dialog pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto;font-size:12px;background:#151d2a;padding:12px}
-#private-dialog .private-totals{display:grid;grid-template-columns:minmax(160px,1fr) 1fr;gap:8px;margin:16px 0}
-#private-dialog dd{margin:0;font-variant-numeric:tabular-nums}
-#private-dialog summary{cursor:pointer;line-height:1.8}
-#private-dialog .private-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}
-#private-dialog .stress-warning{padding:12px 16px;border-left:3px solid #4cbf9a;background:#1a2530;color:#e4eaf0}
-#private-dialog .stress-warning strong{display:inline-block;margin-right:8px;color:#75d4b5}
+#private-dialog button{min-height:44px}
+#private-dialog button:disabled{opacity:.5;cursor:not-allowed}
+#private-intro{flex:0 1 auto;min-height:0;overflow:auto;margin-bottom:16px}
+#private-intro>p{margin:0 0 12px}
+#private-dialog .private-workflow{display:flex;gap:16px;flex-wrap:wrap;list-style:none;padding:0;margin:12px 0;font-size:12px;color:var(--text)}
+#private-dialog .private-workflow li{display:flex;align-items:center;gap:8px}
+#private-dialog .private-workflow span{display:grid;place-items:center;width:24px;height:24px;border:1px solid var(--border);border-radius:5px;color:var(--accent);font-variant-numeric:tabular-nums}
+#private-session{flex:none}
+#private-status{flex:none;margin:16px 0 0;padding:12px 16px;background:var(--bg);border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:5px;white-space:pre-wrap}
+#private-busy{flex:none;margin:8px 0 0;color:var(--accent)!important}
+#private-workspace{flex:1;min-height:0;display:flex;flex-direction:column;margin-top:16px}
+#private-controls{flex:1;min-height:0;display:flex;flex-direction:column}
+#private-dialog .private-accountbar{flex:none;display:flex;align-items:center;justify-content:space-between;gap:16px;padding-bottom:16px}
+#private-dialog .private-accountbar .private-inline{flex:1;max-width:700px}
+#private-dialog .private-scope{color:var(--muted);font-size:11px;line-height:1.7}
+#private-dialog .private-tabs{flex:none;display:flex;gap:4px;overflow-x:auto;padding:4px;border:1px solid var(--border);border-radius:7px;background:var(--bg);scrollbar-width:thin;scrollbar-color:var(--border) var(--bg)}
+#private-dialog [role=tab]{flex:1 0 auto;background:transparent;border:1px solid transparent;border-radius:5px;padding:8px 16px;color:var(--muted);font-size:12px;white-space:nowrap}
+#private-dialog [role=tab]:hover{color:var(--text);background:var(--surface)}
+#private-dialog [role=tab][aria-selected=true]{color:var(--accent);background:var(--surface);border-color:var(--border);font-weight:600}
+#private-dialog .private-panels{min-height:0;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;padding:24px 4px 4px;margin-top:4px}
+#private-dialog [role=tabpanel]{min-width:0;padding:0 4px 8px;overflow-wrap:anywhere}
+#private-dialog .private-panel-lead{margin:0 0 16px}
+#private-dialog .private-help{border:1px solid var(--border);border-radius:6px;padding:0 12px;margin:12px 0 16px;background:var(--bg)}
+#private-dialog .private-help p{margin:0 0 12px}
+#private-dialog summary{cursor:pointer;line-height:1.8;padding:12px 0;min-height:44px;font-size:12px;color:var(--accent)}
+#private-dialog .private-meta{font-variant-numeric:tabular-nums;color:var(--text)}
+#private-dialog .private-table{max-width:100%;overflow:auto;margin:16px 0}
+#private-dialog table{width:100%;min-width:600px;border-collapse:separate;text-align:left}
+#private-dialog td,#private-dialog th{padding:12px;border-bottom:1px solid var(--border);vertical-align:top;white-space:normal;text-align:left;height:auto}
+#private-dialog td:nth-child(2){position:static;font-weight:400}
+#private-dialog td:first-child,#private-dialog th:first-child{width:auto}
+#private-dialog td label{margin-top:12px;min-width:160px}
+#private-dialog pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto;font-size:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;line-height:1.8}
+#private-dialog .private-totals{display:grid;grid-template-columns:minmax(160px,1fr) 1fr;gap:8px 16px;margin:16px 0}
+#private-dialog dt{margin:0;color:var(--muted)}
+#private-dialog dd{margin:0;font-variant-numeric:tabular-nums;color:var(--text)}
+#private-dialog .private-actions{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0}
+#private-dialog .stress-warning{padding:12px 16px;border-left:3px solid var(--accent);background:var(--bg);color:var(--text)}
+#private-dialog .stress-warning strong{display:inline-block;margin-right:8px;color:var(--accent)}
 #private-stress{min-width:0;overflow-wrap:anywhere}
+#private-stress .stress-scroll{max-width:100%;overflow:auto}
 #private-stress .stress-scroll table{min-width:780px;font-variant-numeric:tabular-nums}
-#private-stress .stress-scroll:focus-visible{outline:2px solid #4cbf9a;outline-offset:3px}
 #private-stress .stress-scroll td{min-width:110px}
 #private-stress .stress-scroll td:first-child{min-width:145px}
 #private-stress .stress-scroll label{margin-top:0;min-width:150px}
-#private-stress .stress-total{padding:16px;border:1px solid #3b655a;border-radius:6px;background:#182a28;color:#e4eaf0;line-height:1.8}
-#private-stress .stress-coverage{font-weight:600;color:#e4eaf0}
-#stress-message{min-height:1.65em}
-@media(max-width:700px){#private-dialog{padding:18px}.private-grid,#private-dialog .private-grid{grid-template-columns:1fr}#private-dialog .private-totals{grid-template-columns:1fr}#private-dialog dd{margin-bottom:8px}}
+#private-stress .stress-total{padding:16px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);line-height:1.8}
+#private-stress .stress-coverage{font-weight:600;color:var(--text)}
+#stress-message{min-height:1.8em}
+@media(max-width:760px){
+  #private-dialog{padding:16px;max-height:94dvh}
+  #private-dialog .private-accountbar{flex-wrap:wrap;gap:8px}
+  #private-dialog .private-accountbar .private-inline{max-width:none;flex-basis:100%}
+  #private-dialog .private-scope{font-size:11px}
+  #private-dialog .private-accountbar label{min-width:0}
+  #private-dialog .private-panels{padding-top:16px}
+  #private-dialog .private-grid{grid-template-columns:1fr}
+  #private-dialog [role=tab]{padding-inline:12px}
+  #private-dialog .private-actions .button{white-space:normal}
+}
+@media(max-width:480px){
+  #private-dialog{width:calc(100vw - 16px);max-width:calc(100vw - 16px);padding:12px}
+  #private-dialog .dialog-header{margin-bottom:12px}
+  #private-dialog .dialog-header h2{font-size:18px}
+  #private-dialog .private-workflow{gap:8px;font-size:11px}
+  #private-dialog .private-workflow li{gap:4px}
+  #private-session{gap:8px}
+  #private-session label{flex-basis:100%;min-width:0}
+  #private-status{padding:8px 12px;margin-top:12px;font-size:11px}
+  #private-workspace{margin-top:12px}
+  #private-dialog .private-accountbar{padding-bottom:12px}
+  #private-dialog .private-accountbar .private-inline{gap:8px}
+  #private-dialog .private-accountbar button{padding-inline:12px}
+  #private-dialog .private-totals{grid-template-columns:1fr}
+  #private-dialog dd{margin-bottom:8px}
+}
+@media(max-height:600px){
+  #private-dialog{max-height:96dvh}
+  #private-dialog[data-workspace-session=active]{height:96dvh}
+  #private-dialog .dialog-header{margin-bottom:8px}
+  #private-intro{max-height:24dvh}
+  #private-status{margin-top:8px;padding-block:8px}
+  #private-workspace{margin-top:8px}
+  #private-dialog .private-accountbar{padding-bottom:8px}
+}

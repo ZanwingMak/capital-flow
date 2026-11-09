@@ -3,8 +3,9 @@ import json
 import math
 from datetime import datetime, timedelta
 from pathlib import Path
+from app_paths import data_dir
 
-DATA = Path(__file__).resolve().parent / '.data' / 'minutes'
+DATA = data_dir() / 'minutes'
 
 
 def finite(value):
@@ -48,7 +49,7 @@ def save_minutes(market, symbol, records, sessions):
         merged = {row['time']: row['main'] for row in old.get('points', [])}
         merged.update(points)
         day_type = sessions.get(date)
-        close = ({'US': '13:00', 'HK': '12:00'}.get(market) if day_type == 'HALF' else
+        close = ({'US': '13:00', 'HK': '12:00'}.get(market) if day_type in ('HALF', 'MORNING') else
                  {'US': '16:00', 'HK': '16:00', 'CN': '15:00'}.get(market) if day_type == 'WHOLE' else None)
         record = {'source': 'futu-opend', 'market': market, 'symbol': symbol, 'date': date,
                   'closeTime': close or old.get('closeTime'), 'dayType': day_type or old.get('dayType'),

@@ -1,0 +1,7 @@
+# 节点18：离线启动消除反向DNS与主目录提前求值
+
+第二轮macOS CI的线程栈明确停在HTTPServer.server_bind调用socket.getfqdn。这一反向DNS不影响本机服务语义，却在runner网络环境阻塞超过启动期限。新增FlowdeskHTTPServer直接进行TCP绑定，server_name使用实际绑定地址；源码入口和桌面子进程共同使用，不查询反向DNS。
+
+Windows冻结路径测试显示，已有显式FLOWDESK_USER_DATA_DIR时仍提前求值Path.home，隔离环境无法发现主目录。现在先处理显式覆盖，不再查询无关系统目录。
+
+新增测试将socket.getfqdn和Path.home设置为失败，确认两种启动路径不调用它们。Python全套199项通过。保留节点17启动和退出期限；未跳过失败测试或通过加长预算掩盖DNS阻塞。
