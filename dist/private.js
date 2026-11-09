@@ -101,6 +101,7 @@
   function bind() {
     const el = id => document.getElementById(id), dialog=el('private-dialog');
     if (!dialog) return;
+    const navigation=window.FlowdeskWorkspaceNav?.mount({dialog});
     const client=createClient(window.location,window.fetch.bind(window));
     let account='', snapshot=null, csv='', preview=null, busy=false, workspaceGeneration=0;
     const commit=el('private-confirm');
@@ -161,6 +162,7 @@
     el('open-private').addEventListener('click',()=>{dialog.showModal();stressUI.sync();status(isLocal(window.location)?'主动开启本机会话后访问私有台账。':'GitHub Pages不能读取本机私有数据，请打开本机看板。');el('private-session-button').hidden=!isLocal(window.location);});
     el('private-session').addEventListener('submit',event=>{event.preventDefault();run(async()=>{
       await client.open(el('private-flow-token').value);el('private-flow-token').value='';el('private-workspace').hidden=false;
+      navigation?.setSession(true);
       await accounts();status('本机会话已开启，仅在当前窗口保留令牌。');
     });});
     el('private-create').addEventListener('submit',event=>{event.preventDefault();run(async()=>{
@@ -217,7 +219,7 @@
       stressUI.clear();
       dialog.querySelectorAll('form').forEach(form=>form.reset());
       for (const id of ['private-snapshot','private-preview','private-history','private-account']) el(id).textContent='';
-      el('private-workspace').hidden=true;status('私有会话已关闭。');
+      el('private-workspace').hidden=true;navigation?.reset();status('私有会话已关闭。');
     });
     fieldsForAction();
   }
