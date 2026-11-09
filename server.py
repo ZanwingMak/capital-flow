@@ -21,8 +21,11 @@ from urllib.parse import parse_qs, urlsplit
 from zoneinfo import ZoneInfo
 from launch import APP_ID, project_id
 from private_api import PrivateAPI
+from app_paths import data_dir, static_dir
+import indicator_service
 
-ROOT = Path(__file__).resolve().parent / 'dist'
+ROOT = static_dir()
+DATA = data_dir()
 PRIVATE_API = PrivateAPI()
 HOST = os.getenv('FLOW_HOST', '127.0.0.1')
 PORT = int(os.getenv('FLOW_PORT', '8788'))
@@ -85,7 +88,7 @@ def market_metadata(market):
 def daily_record(symbol, selected_date, context, market='US'):
     """优先复用完整历史缓存，其他股票按需获取真实资金流和前复权日K线。"""
     global LAST_FLOW_REQUEST
-    path = ROOT.parent / '.data' / 'raw' / ((symbol if market == 'US' else market + '.' + symbol) + '.json')
+    path = DATA / 'raw' / ((symbol if market == 'US' else market + '.' + symbol) + '.json')
     minimum, maximum = history_bounds(market)
     try:
         record = json.loads(path.read_text(encoding='utf-8'))
@@ -246,7 +249,7 @@ def finite(value):
 
 def cached_daily_flow(symbol, selected_date, market='US'):
     """读取不可变历史日的真实资金缓存，缺失时交由接口补取。"""
-    path = ROOT.parent / '.data' / 'raw' / ((symbol if market == 'US' else market + '.' + symbol) + '.json')
+    path = DATA / 'raw' / ((symbol if market == 'US' else market + '.' + symbol) + '.json')
     try:
         record = json.loads(path.read_text(encoding='utf-8'))
         rows = [row for row in record['flow'] if str(row['capital_flow_item_time'])[:10] <= selected_date]
@@ -260,7 +263,7 @@ def cached_daily_flow(symbol, selected_date, market='US'):
 
 def cached_daily_quote(symbol, selected_date, market='US'):
     """使用已验证的复权历史日K线补充所选日期价格，缺失时不替用现价。"""
-    path = ROOT.parent / '.data' / 'raw' / ((symbol if market == 'US' else market + '.' + symbol) + '.json')
+    path = DATA / 'raw' / ((symbol if market == 'US' else market + '.' + symbol) + '.json')
     try:
         record = json.loads(path.read_text(encoding='utf-8'))
         for quote in record['prices']:
@@ -275,14 +278,14 @@ def get_context():
     """延迟加载 SDK 并连接 OpenD，缺少依赖或服务时返回明确错误。"""
     global QUOTE_CONTEXT
     try:
-        from futu import OpenQuoteContext
-    except ImportError as error:
-        raise RuntimeError('请先安装行情依赖：python3 -m pip install -r requirements.txt') from error
-    try:
         with socket.create_connection((OPEND_HOST, OPEND_PORT), timeout=2):
             pass
     except OSError as error:
         raise RuntimeError('未连接到富途 OpenD，请启动并登录 OpenD，确认本地端口 11111。') from error
+    try:
+        from futu import OpenQuoteContext
+    except ImportError as error:
+        raise RuntimeError('请先安装行情依赖：python3 -m pip install -r requirements.txt') from error
     if QUOTE_CONTEXT is None:
         QUOTE_CONTEXT = OpenQuoteContext(host=OPEND_HOST, port=OPEND_PORT)
     return QUOTE_CONTEXT
@@ -413,7 +416,7 @@ def intelligence_date(selected_date, market):
     eligible = []
     for item in days:
         kind = item.get('trade_date_type')
-        clock = ({'US': '13:00', 'HK': '12:00'}.get(market) if kind == 'HALF' else
+        clock = ({'US': '13:00', 'HK': '12:00'}.get(market) if kind in ('HALF', 'MORNING') else
                  {'US': '16:00', 'HK': '16:00', 'CN': '15:00'}.get(market) if kind == 'WHOLE' else None)
         if not clock:
             continue
@@ -496,6 +499,25 @@ def intelligence_distribution(symbol, as_of, market):
     result.update(source='富途 OpenD', asOf=as_of,
                   scope='小单成交规模代理，不代表已识别的散户账户、亏损卖出或持仓比例。')
     return result
+
+
+def fetch_indicators(params):
+    """仅向指标服务提供经交易日历截断的已完成日线。"""
+    completed = intelligence_date(params['as_of'], params['market'])
+    job_progress(0, 2, '读取已完成授权日线')
+
+    def loader(symbol, as_of, market):
+        return {
+            'rows': intelligence_daily(symbol, min(as_of, completed), market),
+            'symbol': symbol, 'market': market, 'source': 'Futu OpenD',
+            'adjustment': 'QFQ/current-vintage',
+            'timezone': MARKETS[market]['timezone'],
+            'collectedAt': datetime.now(timezone.utc).isoformat(),
+        }
+
+    report = indicator_service.get_report(loader=loader, **params)
+    job_progress(2, 2, '指标研究完成')
+    return report
 
 
 def fetch_intelligence(symbols, date, market):
@@ -628,10 +650,10 @@ def job_result(identity):
         return 202, {'jobId': identity, 'progress': progress, 'retryAfter': 1}
     try:
         return 200, future.result()
-    except ValueError as error:
-        return 400, {'error': str(error)}
-    except RuntimeError as error:
-        return 503, {'error': str(error)}
+    except ValueError:
+        return 400, {'error': '行情数据或研究参数不满足计算要求，请核对参数、历史覆盖及数据完整性。'}
+    except RuntimeError:
+        return 503, {'error': '数据源暂时不可用，请检查 OpenD 连接、行情权限及历史覆盖后重试。'}
     except Exception as error:
         print('行情任务异常:', type(error).__name__, flush=True)
         return 502, {'error': '行情查询暂时失败，请重试；若持续失败请检查数据源连接及行情权限。'}
@@ -705,7 +727,7 @@ class Handler(SimpleHTTPRequestHandler):
         if PRIVATE_API.handle(self, 'GET', TOKEN):
             return
         parsed = urlsplit(self.path)
-        if parsed.path in {'/api/snapshot', '/api/validation', '/api/path', '/api/main-window', '/api/research', '/api/jobs', '/api/health', '/api/alpaca-status', '/api/alpaca-tail', '/api/chips', '/api/intelligence', '/api/stock-intelligence'}:
+        if parsed.path in {'/api/snapshot', '/api/validation', '/api/path', '/api/main-window', '/api/research', '/api/jobs', '/api/health', '/api/alpaca-status', '/api/alpaca-tail', '/api/chips', '/api/intelligence', '/api/stock-intelligence', '/api/indicators'}:
             origin = self.headers.get('Origin', '')
             own_origins = {f'http://127.0.0.1:{PORT}', f'http://localhost:{PORT}'}
             if origin and origin not in ALLOWED_ORIGINS | own_origins:
@@ -725,7 +747,18 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             if parsed.path == '/api/health':
                 self.respond(200, {'serviceVersion': 4, 'source': 'futu-opend', 'app': APP_ID,
-                    'projectId': project_id(ROOT.parent), 'features': ['jobs', 'research', 'minute-archive', 'alpaca-tail', 'chips', 'intelligence', 'stock-intelligence']})
+                    'projectId': project_id(ROOT.parent), 'features': ['jobs', 'research', 'minute-archive', 'alpaca-tail', 'chips', 'intelligence', 'stock-intelligence', 'indicators']})
+                return
+            if parsed.path == '/api/indicators':
+                try:
+                    params = indicator_service.parse_request(parse_qs(parsed.query, keep_blank_values=True))
+                    identity = submit_job(('indicators', tuple(sorted(params.items()))), fetch_indicators, (params,))
+                    status, payload = job_result(identity)
+                    self.respond(status, payload)
+                except ValueError as error:
+                    self.respond(400, {'error': str(error)})
+                except RuntimeError as error:
+                    self.respond(503, {'error': str(error)})
                 return
             if parsed.path in {'/api/intelligence', '/api/stock-intelligence'}:
                 try:
@@ -794,7 +827,7 @@ class Handler(SimpleHTTPRequestHandler):
                 self.respond(400, {'error': '现有有效性研究只覆盖美股，不能用于其他市场。'})
                 return
             if parsed.path == '/api/validation':
-                path = ROOT.parent / '.data' / 'validation.json'
+                path = DATA / 'validation.json'
                 try:
                     self.respond(200, json.loads(path.read_text(encoding='utf-8')))
                 except (OSError, ValueError):
@@ -848,7 +881,7 @@ class Handler(SimpleHTTPRequestHandler):
             except RuntimeError as error:
                 self.respond(503, {'error': str(error)})
             return
-        if parsed.path not in {'/', '/index.html', '/guide.html', '/windows-package.zip', '/styles.css', '/app.js', '/research.js', '/alpaca.js', '/chips.js', '/intelligence.js', '/intelligence.css', '/private.js', '/private-research.js', '/stress-lab.js', '/private.css', '/data/aaii-survey.json', '/favicon.ico'}:
+        if parsed.path not in {'/', '/index.html', '/guide.html', '/windows-package.zip', '/styles.css', '/app.js', '/research.js', '/alpaca.js', '/chips.js', '/intelligence.js', '/intelligence.css', '/private.js', '/private-research.js', '/stress-lab.js', '/workspace-nav.js', '/indicators.js', '/indicators.css', '/private.css', '/data/aaii-survey.json', '/favicon.ico'}:
             self.respond(404, {'error': '页面不存在。'})
             return
         if parsed.path == '/favicon.ico':
