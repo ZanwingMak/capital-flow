@@ -684,6 +684,16 @@ def collect_watch_minutes():
                     break
 
 
+class FlowdeskHTTPServer(ThreadingHTTPServer):
+    """本机HTTP绑定不依赖反向DNS，避免离线及受限网络阻塞启动。"""
+
+    def server_bind(self):
+        from socketserver import TCPServer
+        TCPServer.server_bind(self)
+        self.server_name = str(self.server_address[0])
+        self.server_port = self.server_address[1]
+
+
 class Handler(SimpleHTTPRequestHandler):
     """在同一源提供页面与行情 API，远程使用时要求显式令牌和来源白名单。"""
 
@@ -909,7 +919,7 @@ def main():
     """启动本地服务并在退出时释放行情连接。"""
     if HOST not in {'127.0.0.1', 'localhost', '::1'} and (not TOKEN or not ALLOWED_ORIGINS):
         raise SystemExit('远程部署必须设置 FLOW_TOKEN 和 FLOW_ALLOWED_ORIGINS，并通过 HTTPS 反向代理访问。')
-    server = ThreadingHTTPServer((HOST, PORT), Handler)
+    server = FlowdeskHTTPServer((HOST, PORT), Handler)
     print(f'Local: http://127.0.0.1:{PORT}', flush=True)
     threading.Thread(target=collect_watch_minutes, daemon=True).start()
     try:

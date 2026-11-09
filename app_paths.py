@@ -16,6 +16,8 @@ def configured(name, fallback):
 
 def user_data_dir():
     """按平台选择桌面应用数据目录，也允许宿主显式指定。"""
+    if os.getenv('FLOWDESK_USER_DATA_DIR'):
+        return configured('FLOWDESK_USER_DATA_DIR', SOURCE)
     if sys.platform == 'win32':
         fallback = Path(os.getenv('APPDATA') or Path.home() / 'AppData/Roaming') / 'Flowdesk'
     elif sys.platform == 'darwin':

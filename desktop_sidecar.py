@@ -122,7 +122,7 @@ def run(protocol, stream, ready):
     # bounds shutdown if an SDK import or cleanup cannot finish.
     threading.Thread(target=control, args=(stream, message, stopped, outcome), daemon=True).start()
     import server
-    httpd = server.ThreadingHTTPServer(('127.0.0.1', 0), server.Handler)
+    httpd = server.FlowdeskHTTPServer(('127.0.0.1', 0), server.Handler)
     httpd.daemon_threads = True
     httpd.block_on_close = False
     server.PORT = httpd.server_address[1]
