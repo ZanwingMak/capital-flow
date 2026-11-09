@@ -8,6 +8,7 @@ import secrets
 import socket
 import subprocess
 import tempfile
+import time
 from urllib.error import HTTPError
 from urllib.request import build_opener, ProxyHandler, Request
 
@@ -30,15 +31,26 @@ def exercise(executable, root, mode):
     environment = {key: value for key, value in os.environ.items() if not key.upper().startswith(('FLOW', 'PYTHON', 'PYINSTALLER'))}
     environment.update(PYTHONDONTWRITEBYTECODE='1', PYINSTALLER_RESET_ENVIRONMENT='1')
     with (root / (mode + '.log')).open('wb') as log:
+        started = time.monotonic()
         child = subprocess.Popen([str(executable)], cwd=root, env=environment,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log)
         pool = concurrent.futures.ThreadPoolExecutor(1)
         try:
+            if mode in ('init-eof', 'init-timeout'):
+                if mode == 'init-eof':
+                    child.stdin.close()
+                # Include native bootloader/extraction in the host's budget.
+                assert child.wait(timeout=30) == 2, '无效首报文退出码异常'
+                assert child.stdout.read() == b'', '首报文前意外就绪'
+                assert not user_data.exists(), '首报文前创建了用户目录'
+                return
             message = {'type': 'init', 'version': 1, 'challenge': challenge,
                        'instanceId': instance, 'userData': str(user_data)}
             child.stdin.write((json.dumps(message) + '\n').encode())
             child.stdin.flush()
-            line = pool.submit(child.stdout.readline, 16385).result(timeout=30)
+            remaining = max(0, 30 - (time.monotonic() - started))
+            line = pool.submit(child.stdout.readline, 16385).result(timeout=remaining)
+            assert line, f'sidecar在就绪前退出，日志: {root / (mode + ".log")}'
             ready = json.loads(line)
             assert len(line) <= 16384 and ready['type'] == 'ready' and ready['version'] == 1, '无效就绪协议'
             assert ready['challenge'] == challenge and ready['instanceId'] == instance, '挑战码不匹配'
@@ -100,9 +112,9 @@ def main():
     args = parser.parse_args()
     executable = args.sidecar.resolve(strict=True)
     with tempfile.TemporaryDirectory(prefix='flowdesk smoke 中文 ') as temporary:
-        for mode in ('shutdown', 'eof', 'bad-challenge'):
+        for mode in ('shutdown', 'eof', 'bad-challenge', 'init-eof', 'init-timeout'):
             exercise(executable, Path(temporary).resolve(), mode)
-    print(json.dumps({'ok': True, 'checks': ['ready', 'http', 'private-origin', 'nonce', 'shutdown', 'eof', 'port-release']}))
+    print(json.dumps({'ok': True, 'checks': ['ready', 'http', 'private-origin', 'nonce', 'shutdown', 'eof', 'init-eof', 'init-timeout', 'port-release']}))
 
 
 if __name__ == '__main__':

@@ -1,4 +1,5 @@
 """Flowdesk桌面HTTP子进程：受管道控制，不提供HTTP退出或任意执行入口。"""
+import faulthandler
 import hmac
 import json
 import os
@@ -12,6 +13,7 @@ import traceback
 VERSION = 1
 MAX_MESSAGE = 16384
 INIT_TIMEOUT = 10
+STARTUP_TIMEOUT = 25  # Includes init and imports; the native host allows 30 seconds.
 
 
 def read_message(stream):
@@ -89,7 +91,7 @@ def configure(message):
     os.chdir(directory)
 
 
-def control(stream, message, httpd, outcome):
+def control(stream, message, stopped, outcome):
     """EOF或受验证的shutdown结束自身服务，非法消息按失败关闭处理。"""
     try:
         command = read_message(stream)
@@ -107,29 +109,43 @@ def control(stream, message, httpd, outcome):
         watchdog = threading.Timer(6, os._exit, args=(2,))
         watchdog.daemon = True
         watchdog.start()
-        httpd.shutdown()
+        stopped.set()
 
 
-def run(protocol, stream):
+def run(protocol, stream, ready):
     """原子绑定loopback随机端口并回显挑战；不探测或复用任何已有服务。"""
     message = initial_message(stream)
     configure(message)
+    stopped = threading.Event()
+    outcome = []
+    # Read EOF even while cold imports are running. The control watchdog also
+    # bounds shutdown if an SDK import or cleanup cannot finish.
+    threading.Thread(target=control, args=(stream, message, stopped, outcome), daemon=True).start()
     import server
     httpd = server.ThreadingHTTPServer(('127.0.0.1', 0), server.Handler)
     httpd.daemon_threads = True
     httpd.block_on_close = False
     server.PORT = httpd.server_address[1]
     server.ALLOWED_ORIGINS.add(f'http://127.0.0.1:{server.PORT}')
-    outcome = []
     collector = threading.Thread(target=server.collect_watch_minutes, daemon=True)
+    serving = None
     try:
+        if stopped.is_set():
+            return outcome[0] if outcome else 0
+        serving = threading.Thread(target=httpd.serve_forever, kwargs={'poll_interval': 0.1}, daemon=True)
+        serving.start()
         protocol.write(json.dumps({'type': 'ready', 'version': VERSION, 'instanceId': message['instanceId'],
                                   'challenge': message['challenge'], 'port': server.PORT}) + '\n')
         protocol.flush()
-        threading.Thread(target=control, args=(stream, message, httpd, outcome), daemon=True).start()
+        # main() cancels the startup deadline as soon as this reply is flushed.
+        ready.set()
+        faulthandler.cancel_dump_traceback_later()
         collector.start()
-        httpd.serve_forever(poll_interval=0.1)
+        stopped.wait()
     finally:
+        if serving is not None:
+            httpd.shutdown()
+            serving.join()
         server.COLLECTOR_STOP.set()
         server.WORKER.shutdown(wait=False, cancel_futures=True)
         httpd.server_close()
@@ -145,16 +161,31 @@ def main():
     os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
     # 无缓冲FD不会在握手超时退出时被守护读取线程持有解释器缓冲锁。
     stream = os.fdopen(os.dup(sys.stdin.fileno()), 'rb', buffering=0)
+    ready = threading.Event()
+    # Preserve the import/stdio stack in the host log before the hard deadline.
+    faulthandler.dump_traceback_later(STARTUP_TIMEOUT - 5, file=sys.stderr)
+    def startup_deadline():
+        """A stalled import must fail before the host's startup deadline."""
+        if not ready.wait(STARTUP_TIMEOUT):
+            os._exit(2)
+    threading.Thread(target=startup_deadline, daemon=True).start()
     try:
-        return run(protocol, stream)
+        return run(protocol, stream, ready)
     except Exception as error:
         print('Flowdesk桌面服务启动失败：' + type(error).__name__, file=sys.stderr, flush=True)
         traceback.print_exc(file=sys.stderr)
         return 2
     finally:
+        ready.set()
+        faulthandler.cancel_dump_traceback_later()
         protocol.close()
-        stream.close()
+        # The daemon reader owns stdin until process exit. On Windows, closing
+        # its CRT descriptor from this thread can wait forever for the read.
 
 
 if __name__ == '__main__':
-    raise SystemExit(main())
+    code = main()
+    sys.stderr.flush()
+    # main() has closed the server and protocol. Do not enter interpreter
+    # finalization with a blocked Windows stdin reader or SDK-owned threads.
+    os._exit(code)

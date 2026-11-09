@@ -7,6 +7,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import io
 from urllib.error import HTTPError
@@ -27,8 +28,9 @@ class DesktopPathsTests(unittest.TestCase):
             self.assertEqual(app_paths.data_dir(), PROJECT / '.data')
             self.assertEqual(app_paths.static_dir(), PROJECT / 'dist')
             self.assertEqual(app_paths.config_dir(), PROJECT)
-        with patch.dict(os.environ, {'FLOWDESK_DATA_DIR': '/tmp/合成 测试/cache'}):
-            self.assertEqual(app_paths.data_dir(), Path('/tmp/合成 测试/cache').resolve())
+        cache = (TEST_ROOT / '合成 测试' / 'cache').resolve()
+        with patch.dict(os.environ, {'FLOWDESK_DATA_DIR': str(cache)}, clear=True):
+            self.assertEqual(app_paths.data_dir(), cache)
         with patch.dict(os.environ, {'FLOWDESK_DATA_DIR': 'relative/unknown'}):
             with self.assertRaises(ValueError):
                 app_paths.data_dir()
@@ -36,12 +38,14 @@ class DesktopPathsTests(unittest.TestCase):
     def test_frozen_defaults_use_user_data_and_readonly_resources(self):
         """冻结运行时从资源读页面，将缓存写入用户目录。"""
         import app_paths
-        with patch.dict(os.environ, {'FLOWDESK_USER_DATA_DIR': '/tmp/桌面 用户'}, clear=True), \
+        user_data = (TEST_ROOT / '桌面 用户').resolve()
+        resources = (TEST_ROOT / '只读 资源').resolve()
+        with patch.dict(os.environ, {'FLOWDESK_USER_DATA_DIR': str(user_data)}, clear=True), \
                 patch.object(sys, 'frozen', True, create=True), \
-                patch.object(sys, '_MEIPASS', '/tmp/只读 资源', create=True):
-            self.assertEqual(app_paths.static_dir(), Path('/tmp/只读 资源/dist').resolve())
-            self.assertEqual(app_paths.data_dir(), Path('/tmp/桌面 用户/data').resolve())
-            self.assertEqual(app_paths.config_dir(), Path('/tmp/桌面 用户/config').resolve())
+                patch.object(sys, '_MEIPASS', str(resources), create=True):
+            self.assertEqual(app_paths.static_dir(), resources / 'dist')
+            self.assertEqual(app_paths.data_dir(), user_data / 'data')
+            self.assertEqual(app_paths.config_dir(), user_data / 'config')
 
     def test_managed_cache_modules_use_isolated_unicode_directory(self):
         """新进程按环境导入全部缓存模块，只读写合成目录中的JSON与配置。"""
@@ -131,19 +135,43 @@ class DesktopProtocolTests(unittest.TestCase):
         self.user_data = str(Path(self.temp.name) / '用户 Data')
         self.challenge = secrets.token_hex(32)
         self.instance = secrets.token_hex(16)
+        self.started = {}
+        self.logs = {}
 
-    def start(self, init=None):
+    def start(self, init=None, before_server='', send_init=True):
         """启动真实入口，将SDK打印和协议输出分开捕获。"""
         env = {k: v for k, v in os.environ.items() if not k.startswith(('FLOW', 'APCA_', 'FUTU_'))}
         env['PYTHONDONTWRITEBYTECODE'] = '1'
-        child = subprocess.Popen([sys.executable, '-B', str(PROJECT / 'desktop_sidecar.py')],
+        command = [sys.executable, '-B', str(PROJECT / 'desktop_sidecar.py')]
+        if before_server:
+            # Delay at the real import boundary, after init has been validated.
+            script = f'''
+import runpy, sys
+sys.path.insert(0, {str(PROJECT)!r})
+class BeforeServer:
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == 'server':
+            sys.meta_path.remove(self)
+            exec({before_server!r})
+sys.meta_path.insert(0, BeforeServer())
+runpy.run_path({str(PROJECT / 'desktop_sidecar.py')!r}, run_name='__main__')
+'''
+            command = [sys.executable, '-B', '-c', script]
+        log_path = Path(self.temp.name) / f'sidecar-{len(self.logs)}.log'
+        log = log_path.open('wb')
+        self.addCleanup(log.close)
+        started = time.monotonic()
+        child = subprocess.Popen(command,
                                  cwd=self.temp.name, env=env, stdin=subprocess.PIPE,
-                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                                 stdout=subprocess.PIPE, stderr=log, text=True, encoding='utf-8')
+        self.started[child] = started
+        self.logs[child] = log_path
         self.addCleanup(self.close, child)
         message = init or {'type': 'init', 'version': 1, 'challenge': self.challenge,
                            'instanceId': self.instance, 'userData': self.user_data}
-        child.stdin.write(json.dumps(message) + '\n')
-        child.stdin.flush()
+        if send_init:
+            child.stdin.write(json.dumps(message) + '\n')
+            child.stdin.flush()
         return child
 
     def close(self, child):
@@ -152,7 +180,8 @@ class DesktopProtocolTests(unittest.TestCase):
             child.kill()
         child.wait(timeout=5)
         for stream in (child.stdin, child.stdout, child.stderr):
-            stream.close()
+            if stream is not None:
+                stream.close()
 
     def ready(self, child):
         """读取一条就绪消息，测试总体超时由独立进程等待保证。"""
@@ -164,8 +193,17 @@ class DesktopProtocolTests(unittest.TestCase):
             self.skipTest('当前沙箱禁止loopback绑定；原生打包冒烟须在父进程或CI执行。')
         pool = concurrent.futures.ThreadPoolExecutor(1)
         try:
-            line = pool.submit(child.stdout.readline).result(timeout=10)
+            # Native launchChild allows 30 seconds from launch, including cold
+            # imports. Sidecar's own 25-second guard must fail before that.
+            remaining = max(0, 30 - (time.monotonic() - self.started[child]))
+            line = pool.submit(child.stdout.readline, 16385).result(timeout=remaining)
+            if not line:
+                self.fail(f'sidecar在ready前退出({child.poll()}): {self.logs[child].read_text(encoding="utf-8", errors="replace")[-4000:]}')
             return json.loads(line)
+        except TimeoutError:
+            child.kill()
+            child.wait(timeout=5)
+            self.fail(f'sidecar超过宿主30秒启动期限: {self.logs[child].read_text(encoding="utf-8", errors="replace")[-4000:]}')
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
 
@@ -219,6 +257,30 @@ class DesktopProtocolTests(unittest.TestCase):
         child.stdin.close()
         self.assertEqual(child.wait(timeout=5), 0)
 
+    def test_cold_start_with_verbose_import_fits_host_deadline(self):
+        """冷导入超过旧10秒且输出大量日志时，仍可在宿主30秒内就绪。"""
+        child = self.start(before_server=(
+            "import sys, time; sys.stderr.write('synthetic-import-log\\n' * 16384); "
+            "sys.stderr.flush(); time.sleep(10.5)"))
+        ready = self.ready(child)
+        self.assertEqual(ready['challenge'], self.challenge)
+        child.stdin.close()
+        self.assertEqual(child.wait(timeout=5), 0)
+
+    def test_stdin_eof_during_server_import_stops_child(self):
+        """宿主在冷启动导入中退出时，不等待导入完成才处理EOF。"""
+        marker = Path(self.temp.name) / 'import-started'
+        child = self.start(before_server=(
+            f"from pathlib import Path; Path({str(marker)!r}).touch(); "
+            "import time; time.sleep(60)"))
+        deadline = time.monotonic() + 5
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(marker.exists(), '未进入真实server导入边界')
+        child.stdin.close()
+        self.assertEqual(child.wait(timeout=8), 2)
+        self.assertEqual(child.stdout.read(), '')
+
     def test_bad_shutdown_challenge_fails_closed(self):
         """不匹配挑战码不能被当成有效控制消息继续服务。"""
         child = self.start()
@@ -240,11 +302,24 @@ class DesktopProtocolTests(unittest.TestCase):
 
     def test_init_timeout_exits_without_listening(self):
         """没有宿主首报文时，在固定握手期限内回收真实子进程。"""
-        child = subprocess.Popen([sys.executable, '-B', str(PROJECT / 'desktop_sidecar.py')],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.addCleanup(self.close, child)
+        child = self.start(send_init=False)
         self.assertEqual(child.wait(timeout=13), 2)
-        self.assertEqual(child.stdout.read(), b'')
+        self.assertEqual(child.stdout.read(), '')
+
+    def test_stalled_import_exits_before_host_deadline(self):
+        """即使有效init后的导入停滞，25秒自限也先于宿主30秒触发。"""
+        child = self.start(before_server='import time; time.sleep(60)')
+        self.assertEqual(child.wait(timeout=28), 2)
+        self.assertLess(time.monotonic() - self.started[child], 30)
+        self.assertEqual(child.stdout.read(), '')
+
+    def test_stdin_eof_before_init_fails_closed(self):
+        """宿主未发送首报文即关闭管道时，立即失败且不配置用户目录。"""
+        child = self.start(send_init=False)
+        child.stdin.close()
+        self.assertEqual(child.wait(timeout=5), 2)
+        self.assertEqual(child.stdout.read(), '')
+        self.assertFalse(Path(self.user_data).exists())
 
     def test_duplicate_fields_rejected_before_environment_configuration(self):
         """重复字段及未知控制类型不能进入受管目录初始化。"""
