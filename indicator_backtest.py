@@ -32,12 +32,23 @@ def performance(points, initial, closed, exposed, turnover):
             'sharpeConvention': '252日年化、零无风险利率；至少30根且日收益标准差>1e-12，否则null。'}
 
 
-def run_backtest(rows, events, start=0, end=None, version='QUSHI-CHANG', initial=10000, fee_bps=5, slippage_bps=5):
+def run_backtest(rows, events, start=0, end=None, version='QUSHI-CHANG', initial=10000, fee_bps=5, slippage_bps=5, strategy=None):
     """收盘确认、次开盘执行，单仓全资金、无杠杆、不做空、不强制期末平仓。"""
     rows = validate_bars(rows)
     initial, fee, slip = costs(initial, fee_bps, slippage_bps)
-    if version not in ('QUSHI-CHANG', 'QUSHI-DUAN'):
+    if strategy is None and version not in ('QUSHI-CHANG', 'QUSHI-DUAN'):
         raise ValueError('仅长短趋势定义回测策略。')
+    if strategy is None:
+        buy_names, sell_names, priority = ('CALLSIG', 'BOTSIG'), ('PUTSIG', 'TOPSIG'), PRIMARY
+        max_hold = CATALOG[version]['maxHold']
+    else:
+        buy_names, sell_names = tuple(strategy['entry']), tuple(strategy['exit'])
+        priority = sell_names + buy_names
+        max_hold = strategy['maxHoldBars']
+        if not buy_names or not sell_names or len(priority)>20 or len(set(priority))!=len(priority) or any(not isinstance(v,str) or not v for v in priority):
+            raise ValueError('固定策略事件定义无效。')
+        if isinstance(max_hold,bool) or not isinstance(max_hold,int) or not 1<=max_hold<=252:
+            raise ValueError('固定持有上限无效。')
     end = len(rows) if end is None else end
     if any(isinstance(x, bool) or not isinstance(x, int) for x in (start, end)) or not 0 <= start <= end <= len(rows):
         raise ValueError('回测范围无效。')
@@ -50,9 +61,8 @@ def run_backtest(rows, events, start=0, end=None, version='QUSHI-CHANG', initial
         index, name = event.get('index'), event.get('name')
         if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(rows):
             raise ValueError('事件索引无效。')
-        if name in PRIMARY:
+        if name in priority:
             by_index.setdefault(index, set()).add(name)
-    max_hold = CATALOG[version]['maxHold']
     cash, position, pending, trades, equity = initial, None, None, [], []
     exposed, turnover, unexecuted = 0, 0.0, 0
     for i in range(start, end):
@@ -84,12 +94,12 @@ def run_backtest(rows, events, start=0, end=None, version='QUSHI-CHANG', initial
         exposed += position is not None
         names = by_index.get(i, set())
         # 同根主方向遵循原显示优先级，且持仓时只处理退出，避免重叠资金。
-        name = next((key for key in PRIMARY if key in names), None)
+        name = next((key for key in priority if key in names), None)
         if position:
-            reason = name if name in ('PUTSIG', 'TOPSIG') else 'max-hold' if i - position['entryIndex'] + 1 >= max_hold else None
+            reason = name if name in sell_names else 'max-hold' if i - position['entryIndex'] + 1 >= max_hold else None
             if reason:
                 pending = {'action': 'sell', 'signalIndex': i, 'name': reason}
-        elif name in ('CALLSIG', 'BOTSIG'):
+        elif name in buy_names:
             pending = {'action': 'buy', 'signalIndex': i, 'name': name}
         if pending and i + 1 >= end:
             unexecuted += 1
@@ -109,7 +119,7 @@ def run_backtest(rows, events, start=0, end=None, version='QUSHI-CHANG', initial
                       'end': rows[end-1]['date'] if start < end else None, 'bars': end - start},
             'rules': {'id': 'flowdesk-stock-long-next-open-1', 'version': version, 'maxHoldBars': max_hold,
                       'initialUSD': initial, 'feeBpsPerLeg': fee * 10000, 'slippageBpsPerLeg': slip * 10000,
-                      'entry': ['CALLSIG', 'BOTSIG'], 'exit': ['PUTSIG', 'TOPSIG', 'max-hold'],
+                      'entry': list(buy_names), 'exit': list(sell_names)+['max-hold'],
                       'execution': 'signal-close-known / next-bar-open', 'positionSizing': 'all-capital-fractional-shares',
                       'endPolicy': 'mark-open-position-at-close', 'stopTargetExecution': False,
                       'note': '固定持有/反向信号是新增执行约定；原公式价位仅作参考。未模拟最低佣金/点差之外的流动性与税费。'},
