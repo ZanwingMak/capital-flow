@@ -60,7 +60,7 @@
       const payload = await response.json();
       if (response.status === 202) {
         if (!/^[a-f0-9]{24}$/.test(payload.jobId || '')) throw new Error('后台任务格式错误。');
-        progress(payload.progress || {}); target = new URL(url); target.pathname=target.pathname.replace(/\/(?:indicators|methods)$/, '/jobs');
+        progress(payload.progress || {}); target = new URL(url); target.pathname=target.pathname.replace(/\/(?:indicators|methods|market-context)$/, '/jobs');
         target.search=''; target.searchParams.set('id',payload.jobId); await pause(signal); continue;
       }
       if (!response.ok) throw new Error(response.status===404 ? '行情服务尚未接入自定义指标端点，请更新并重启服务。' : payload.error || '指标请求失败（'+response.status+'）。');

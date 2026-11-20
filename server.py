@@ -24,6 +24,7 @@ from private_api import PrivateAPI
 from app_paths import data_dir, static_dir
 import indicator_service
 import methods_service
+import market_context
 
 ROOT = static_dir()
 DATA = data_dir()
@@ -757,7 +758,7 @@ class Handler(SimpleHTTPRequestHandler):
         if PRIVATE_API.handle(self, 'GET', TOKEN):
             return
         parsed = urlsplit(self.path)
-        if parsed.path in {'/api/snapshot', '/api/validation', '/api/path', '/api/main-window', '/api/research', '/api/jobs', '/api/health', '/api/alpaca-status', '/api/alpaca-tail', '/api/chips', '/api/intelligence', '/api/stock-intelligence', '/api/indicators', '/api/methods'}:
+        if parsed.path in {'/api/snapshot', '/api/validation', '/api/path', '/api/main-window', '/api/research', '/api/jobs', '/api/health', '/api/alpaca-status', '/api/alpaca-tail', '/api/chips', '/api/intelligence', '/api/stock-intelligence', '/api/indicators', '/api/methods', '/api/market-context'}:
             origin = self.headers.get('Origin', '')
             own_origins = {f'http://127.0.0.1:{PORT}', f'http://localhost:{PORT}'}
             if origin and origin not in ALLOWED_ORIGINS | own_origins:
@@ -777,7 +778,26 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             if parsed.path == '/api/health':
                 self.respond(200, {'serviceVersion': 4, 'source': 'futu-opend', 'app': APP_ID,
-                    'projectId': project_id(ROOT.parent), 'features': ['jobs', 'research', 'minute-archive', 'alpaca-tail', 'chips', 'intelligence', 'stock-intelligence', 'indicators', 'methods']})
+                    'projectId': project_id(ROOT.parent), 'features': ['jobs', 'research', 'minute-archive', 'alpaca-tail', 'chips', 'intelligence', 'stock-intelligence', 'indicators', 'methods', 'market-context']})
+                return
+            if parsed.path == '/api/market-context':
+                try:
+                    params = parse_qs(parsed.query, keep_blank_values=True)
+                    if set(params) - {'asOf', 'market'} or any(len(v) != 1 for v in params.values()):
+                        raise ValueError('参数无效。')
+                    if params.get('market', ['US'])[0] != 'US':
+                        raise ValueError('仅支持US环境。')
+                    today = datetime.now(ZoneInfo('America/New_York')).date().isoformat()
+                    as_of = params.get('asOf', [today])[0]
+                    if datetime.strptime(as_of, '%Y-%m-%d').date().isoformat() != as_of or as_of > today:
+                        raise ValueError('日期无效。')
+                    identity = submit_job(('market-context', as_of, int(time.time() // 600)), market_context.get_report, (as_of,))
+                    status, payload = job_result(identity)
+                    self.respond(status, payload)
+                except ValueError:
+                    self.respond(400, {'error': '环境研究参数无效，请使用US及不晚于今天的YYYY-MM-DD日期。'})
+                except RuntimeError:
+                    self.respond(503, {'error': '研究队列正忙，请稍后重试。'})
                 return
             if parsed.path == '/api/methods':
                 try:
@@ -922,7 +942,7 @@ class Handler(SimpleHTTPRequestHandler):
             except RuntimeError as error:
                 self.respond(503, {'error': str(error)})
             return
-        if parsed.path not in {'/', '/index.html', '/guide.html', '/windows-package.zip', '/styles.css', '/app.js', '/research.js', '/alpaca.js', '/chips.js', '/intelligence.js', '/intelligence.css', '/private.js', '/private-research.js', '/stress-lab.js', '/workspace-nav.js', '/indicators.js', '/indicators.css', '/methods.js', '/methods.css', '/private.css', '/data/aaii-survey.json', '/favicon.ico', '/brand/flowdesk.svg', '/brand/flowdesk-32.png', '/brand/flowdesk-192.png', '/brand/flowdesk-512.png', '/brand/flowdesk-1024.png'}:
+        if parsed.path not in {'/', '/index.html', '/guide.html', '/windows-package.zip', '/styles.css', '/app.js', '/research.js', '/alpaca.js', '/chips.js', '/intelligence.js', '/intelligence.css', '/private.js', '/private-research.js', '/stress-lab.js', '/workspace-nav.js', '/indicators.js', '/indicators.css', '/methods.js', '/methods.css', '/market-context.js', '/market-context.css', '/private.css', '/data/aaii-survey.json', '/favicon.ico', '/brand/flowdesk.svg', '/brand/flowdesk-32.png', '/brand/flowdesk-192.png', '/brand/flowdesk-512.png', '/brand/flowdesk-1024.png'}:
             self.respond(404, {'error': '页面不存在。'})
             return
         super().do_GET()
