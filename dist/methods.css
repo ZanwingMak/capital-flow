@@ -1,0 +1,18 @@
+/* 多方法研究仅扩展自身弹窗，沿用指标工作台的颜色、表格与焦点样式。 */
+.methods-dialog{width:min(1240px,calc(100vw - 28px))}
+.methods-dialog .methods-cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin:22px 0}
+.methods-dialog .methods-card{padding:18px;border:1px solid var(--ind-line);border-radius:8px;background:#142026;min-width:0}
+.methods-dialog .methods-card h3{margin:0;font-size:15px}
+.methods-dialog .methods-card p{font-size:12px;color:var(--ind-muted);overflow-wrap:anywhere}
+.methods-dialog .methods-card-head{display:flex;gap:10px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap}
+.methods-dialog .methods-state{font-size:10px;border:1px solid #465b55;border-radius:4px;padding:3px 7px;color:#c9dcd1;white-space:nowrap}
+.methods-dialog details{margin-top:14px;font-size:12px;line-height:1.8}
+.methods-dialog summary{cursor:pointer;color:#b8d4c4;min-height:30px}
+.methods-dialog a{color:#b8d4c4;text-underline-offset:3px}
+.methods-dialog .methods-selector{max-width:390px;margin:24px 0}
+.methods-dialog #methods-status{padding:12px 0;border-block:1px solid var(--ind-line);color:var(--ind-muted);font-size:12px}
+.methods-dialog .methods-limit{border-top:1px solid var(--ind-line);padding:18px 0;margin-top:28px}
+.methods-dialog .ind-result-heading h3{margin:12px 0}
+.methods-dialog code{overflow-wrap:anywhere}
+@media(max-width:700px){.methods-dialog{padding:16px}.methods-dialog .methods-cards{grid-template-columns:1fr}.methods-dialog .ind-form{grid-template-columns:repeat(2,minmax(0,1fr))}.methods-dialog .ind-header{top:-16px}.methods-dialog h2{font-size:20px}.methods-dialog .ind-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(prefers-reduced-motion:reduce){.methods-dialog *{animation:none!important;transition:none!important}}

@@ -23,6 +23,7 @@ from launch import APP_ID, project_id
 from private_api import PrivateAPI
 from app_paths import data_dir, static_dir
 import indicator_service
+import methods_service
 
 ROOT = static_dir()
 DATA = data_dir()
@@ -520,6 +521,25 @@ def fetch_indicators(params):
     return report
 
 
+def fetch_methods(params):
+    """复用授权日线与交易日历，逐笔只读取同日已有归档，不触及交易账户。"""
+    completed = intelligence_date(params['as_of'], params['market'])
+    job_progress(0, 2, '读取已完成日线与同日逐笔归档')
+
+    def loader(symbol, as_of, market):
+        """将同一复权、时区与完成日截断传给纯研究服务。"""
+        return {'rows': intelligence_daily(symbol, min(as_of, completed), market),
+                'symbol': symbol, 'market': market, 'timezone': MARKETS[market]['timezone'],
+                'completedAsOf': min(as_of, completed),
+                'source': 'Futu OpenD', 'adjustment': 'QFQ/current-vintage',
+                'collectedAt': datetime.now(timezone.utc).isoformat()}
+
+    report = methods_service.get_report(loader=loader,
+        flow_loader=partial(methods_service.archived_orderflow, DATA), **params)
+    job_progress(2, 2, '多方法重放与独立回测完成')
+    return report
+
+
 def fetch_intelligence(symbols, date, market):
     """获取市场风险模块，复用行情日历及异步任务的进度和缓存。"""
     job_progress(0, 3, '核验市场收盘日历')
@@ -737,7 +757,7 @@ class Handler(SimpleHTTPRequestHandler):
         if PRIVATE_API.handle(self, 'GET', TOKEN):
             return
         parsed = urlsplit(self.path)
-        if parsed.path in {'/api/snapshot', '/api/validation', '/api/path', '/api/main-window', '/api/research', '/api/jobs', '/api/health', '/api/alpaca-status', '/api/alpaca-tail', '/api/chips', '/api/intelligence', '/api/stock-intelligence', '/api/indicators'}:
+        if parsed.path in {'/api/snapshot', '/api/validation', '/api/path', '/api/main-window', '/api/research', '/api/jobs', '/api/health', '/api/alpaca-status', '/api/alpaca-tail', '/api/chips', '/api/intelligence', '/api/stock-intelligence', '/api/indicators', '/api/methods'}:
             origin = self.headers.get('Origin', '')
             own_origins = {f'http://127.0.0.1:{PORT}', f'http://localhost:{PORT}'}
             if origin and origin not in ALLOWED_ORIGINS | own_origins:
@@ -757,7 +777,18 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             if parsed.path == '/api/health':
                 self.respond(200, {'serviceVersion': 4, 'source': 'futu-opend', 'app': APP_ID,
-                    'projectId': project_id(ROOT.parent), 'features': ['jobs', 'research', 'minute-archive', 'alpaca-tail', 'chips', 'intelligence', 'stock-intelligence', 'indicators']})
+                    'projectId': project_id(ROOT.parent), 'features': ['jobs', 'research', 'minute-archive', 'alpaca-tail', 'chips', 'intelligence', 'stock-intelligence', 'indicators', 'methods']})
+                return
+            if parsed.path == '/api/methods':
+                try:
+                    params = methods_service.parse_request(parse_qs(parsed.query, keep_blank_values=True))
+                    identity = submit_job(('methods', tuple(sorted(params.items()))), fetch_methods, (params,))
+                    status, payload = job_result(identity)
+                    self.respond(status, payload)
+                except ValueError:
+                    self.respond(400, {'error': '多方法参数无效。请检查US代码、YYYY-MM-DD日期与0至100bps成本。'})
+                except RuntimeError:
+                    self.respond(503, {'error': '研究队列正忙，请稍后重试。'})
                 return
             if parsed.path == '/api/indicators':
                 try:
@@ -891,7 +922,7 @@ class Handler(SimpleHTTPRequestHandler):
             except RuntimeError as error:
                 self.respond(503, {'error': str(error)})
             return
-        if parsed.path not in {'/', '/index.html', '/guide.html', '/windows-package.zip', '/styles.css', '/app.js', '/research.js', '/alpaca.js', '/chips.js', '/intelligence.js', '/intelligence.css', '/private.js', '/private-research.js', '/stress-lab.js', '/workspace-nav.js', '/indicators.js', '/indicators.css', '/private.css', '/data/aaii-survey.json', '/favicon.ico', '/brand/flowdesk.svg', '/brand/flowdesk-32.png', '/brand/flowdesk-192.png', '/brand/flowdesk-512.png', '/brand/flowdesk-1024.png'}:
+        if parsed.path not in {'/', '/index.html', '/guide.html', '/windows-package.zip', '/styles.css', '/app.js', '/research.js', '/alpaca.js', '/chips.js', '/intelligence.js', '/intelligence.css', '/private.js', '/private-research.js', '/stress-lab.js', '/workspace-nav.js', '/indicators.js', '/indicators.css', '/methods.js', '/methods.css', '/private.css', '/data/aaii-survey.json', '/favicon.ico', '/brand/flowdesk.svg', '/brand/flowdesk-32.png', '/brand/flowdesk-192.png', '/brand/flowdesk-512.png', '/brand/flowdesk-1024.png'}:
             self.respond(404, {'error': '页面不存在。'})
             return
         super().do_GET()
